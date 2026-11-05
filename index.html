@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-Hant-HK">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>小票簿</title>
+<meta name="description" content="公司雜費收據記錄：影相上載、AI 翻譯及分類、匯出會計報表">
+<meta name="theme-color" content="#e8ecf3" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0d1120" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="小票簿">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div id="setupView" class="setup" hidden>
+  <h1>小票簿</h1>
+  <p>還未設定資料庫。請按 <code>README.md</code> 的步驟，在 <code>config.js</code> 填入 Supabase 網址和 anon key。</p>
+</div>
+
+<div id="loginView" class="login" hidden>
+  <form class="card" id="loginForm">
+    <div><h1>小票簿</h1><div class="sub">公司雜費收據記錄</div></div>
+    <input id="loginEmail" type="email" placeholder="電郵" autocomplete="username" required aria-label="電郵">
+    <input id="loginPw" type="password" placeholder="密碼" autocomplete="current-password" required aria-label="密碼">
+    <div class="err" id="loginErr" hidden></div>
+    <button class="primary" type="submit" id="loginBtn">登入</button>
+    <div class="sub">帳戶由公司管理員建立。忘記密碼請聯絡管理員。</div>
+  </form>
+</div>
+
+<div id="appView" hidden>
+
+<div class="wrap">
+  <div class="bar">
+    <button class="iconbtn" id="setBtn" aria-label="設定：匯率及會計科目"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+    <button class="addbtn" id="addBtn" aria-label="新增收據">＋</button>
+  </div>
+  <div id="notice" class="banner" hidden></div>
+
+  <!-- 收據 -->
+  <section id="v-receipts" style="display:flex;flex-direction:column;gap:14px">
+    <div><h1>收據</h1><div class="sub" id="rcSub">—</div></div>
+    <input id="q" class="search" type="search" placeholder="搜尋商戶、備註或標籤" aria-label="搜尋收據">
+    <div class="chips" id="statusF">
+      <button data-s="all" aria-pressed="true">全部</button>
+      <button data-s="pending" aria-pressed="false">待報銷</button>
+      <button data-s="done" aria-pressed="false">已報銷</button>
+    </div>
+    <div class="banner" id="fBanner" hidden><span id="fText"></span><button class="ghost" id="fClear">清除篩選 ✕</button></div>
+    <div class="list" id="rcList"><div class="empty">正在載入記錄…</div></div>
+  </section>
+
+  <!-- 統計 -->
+  <section id="v-stats" hidden style="display:flex;flex-direction:column;gap:14px">
+    <h1>統計</h1>
+    <div class="label">報告日期範圍</div>
+    <div class="card">
+      <div class="range"><input type="date" id="sFrom" aria-label="開始日期"><span class="sub">至</span><input type="date" id="sTo" aria-label="結束日期"></div>
+      <div class="chips" id="sPresets"></div>
+    </div>
+    <div class="label">總支出</div>
+    <div class="hero">
+      <div class="sub" id="sLbl"></div>
+      <div class="big" id="sTotal">HK$0.00</div>
+      <div class="split"><div><b id="sCount">0</b><span>收據</span></div><i></i><div><b id="sAvg">HK$0</b><span>日均</span></div></div>
+    </div>
+    <div class="bar"><div class="label" style="margin:0">支出趨勢</div><span class="sub" id="sGran"></span></div>
+    <div class="card"><div class="chart" id="chart"></div></div>
+    <div class="label">細分</div>
+    <div class="card">
+      <div class="seg" id="sDims">
+        <button data-d="cat" aria-pressed="true">類別</button>
+        <button data-d="tag" aria-pressed="false">標籤</button>
+        <button data-d="merchant" aria-pressed="false">商戶</button>
+        <button data-d="cur" aria-pressed="false">貨幣</button>
+      </div>
+      <div id="sBreak"></div>
+    </div>
+    <div class="note">點按類別、標籤、商戶或貨幣，即可開啟相關收據。</div>
+    <button class="linkrow" id="sAll"><span>此範圍內的所有收據</span><small id="sAllN">0 ›</small></button>
+    <button class="primary" id="sExport">匯出此範圍會計報表（Excel）</button>
+  </section>
+
+  <!-- 報告 -->
+  <section id="v-reports" hidden style="display:flex;flex-direction:column;gap:12px"></section>
+</div>
+
+<div class="tabbar"><nav aria-label="主選單">
+  <button data-tab="receipts" aria-current="page"><svg viewBox="0 0 24 24"><path d="M6 2h12v20l-3-2-3 2-3-2-3 2z"/><path d="M9 7h6M9 11h6M9 15h4"/></svg>收據</button>
+  <button data-tab="stats"><svg viewBox="0 0 24 24"><path d="M4 20V10M9 20V4M14 20v-8M19 20V7"/></svg>統計</button>
+  <button data-tab="reports"><svg viewBox="0 0 24 24"><path d="M3 13l3-8h12l3 8v6H3z"/><path d="M3 13h5l1 2h6l1-2h5"/></svg>報告</button>
+</nav></div>
+
+<!-- add / edit -->
+<div class="scrim" id="formScrim" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="formTitle">
+    <header><h3 id="formTitle">新增收據</h3><button class="ghost" id="formClose" aria-label="關閉">✕</button></header>
+    <label class="drop" id="drop" for="file">
+      <strong>影相或揀選收據相片</strong>
+      <span id="dropHint">自動讀取韓文／日文／中文，翻譯並分類</span>
+      <input id="file" type="file" accept="image/*" hidden>
+    </label>
+    <div class="preview" id="preview" hidden>
+      <img id="prevImg" alt="收據預覽">
+      <div style="display:flex;flex-direction:column;gap:8px;min-width:0">
+        <div class="ai" id="aiBox"></div>
+        <button class="ghost" id="rePhoto" style="align-self:flex-start;padding:4px 0">更換相片</button>
+      </div>
+    </div>
+    <div class="form">
+      <div class="field"><label for="fDate">日期</label><input id="fDate" type="date"></div>
+      <div class="field"><label for="fCat">類別（會計科目）</label><select id="fCat"></select></div>
+      <div class="field"><label for="fMerchZh">商戶（中文）</label><input id="fMerchZh" placeholder="例：便利店 GS25"></div>
+      <div class="field"><label for="fMerchOrig">商戶（原文）</label><input id="fMerchOrig" class="ko" placeholder="GS25 강남점"></div>
+      <div class="field"><label for="fAmt">金額</label>
+        <div class="amtrow"><select id="fCur"></select><input id="fAmt" class="num" type="number" min="0" step="any" inputmode="decimal" placeholder="0"></div></div>
+      <div class="field"><label for="fRate">匯率（1 原幣 = HKD）</label><input id="fRate" class="num" type="number" min="0" step="any" inputmode="decimal"><span class="hint num" id="fHkd">≈ HK$0.00</span></div>
+      <div class="field"><label for="fPay">付款方式</label><select id="fPay"><option>信用卡</option><option>現金</option><option>交通卡</option><option>其他</option></select></div>
+      <div class="field"><label for="fRep">報告</label><select id="fRep"></select></div>
+      <div class="field full"><span class="flabel">標籤</span><div class="tagpick" id="fTags"></div></div>
+      <div class="field full"><label for="fNote">備註（翻譯摘要）</label><textarea id="fNote" rows="2"></textarea></div>
+      <div class="field" id="fStatusWrap" hidden><label for="fStatus">報銷狀態</label><select id="fStatus"><option value="pending">待報銷</option><option value="done">已報銷</option></select></div>
+    </div>
+    <div class="items" id="fItems" hidden></div>
+    <div class="actions">
+      <button class="ghost" id="formCancel">取消</button>
+      <button class="primary" id="saveBtn">儲存收據</button>
+    </div>
+  </div>
+</div>
+
+<!-- detail -->
+<div class="scrim" id="detScrim" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="detTitle">
+    <header><h3 id="detTitle"></h3><button class="ghost" id="detClose" aria-label="關閉">✕</button></header>
+    <div id="detBody" style="display:flex;flex-direction:column;gap:14px"></div>
+  </div>
+</div>
+
+<!-- settings -->
+<div class="scrim" id="setScrim" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="setTitle">
+    <header><h3 id="setTitle">設定</h3><button class="ghost" id="setClose" aria-label="關閉">✕</button></header>
+    <div class="label" style="margin:0">匯率（1 單位外幣 = 多少港幣）</div>
+    <div class="ratelist" id="rateList"></div>
+    <div class="hint">新收據會用這裏的匯率，每張收據儲存時會鎖定當時匯率，之後改匯率不會影響舊記錄。</div>
+    <div class="label" style="margin:0">會計科目</div>
+    <div class="acctlist" id="acctList"></div>
+    <div class="actions"><button class="primary" id="setSave">儲存設定</button></div>
+    <div class="label" style="margin:0">我的帳戶</div>
+    <div class="sub" id="meEmail"></div>
+    <div class="newrep"><input id="newPw" type="password" placeholder="新密碼（最少 8 個字）" aria-label="新密碼" autocomplete="new-password"><button id="pwBtn">更改密碼</button></div>
+    <div class="actions"><button class="danger" id="logoutBtn">登出</button></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+</div>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
