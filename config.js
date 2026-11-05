@@ -2,12 +2,12 @@
 // 這些值本身是公開的，放在網頁內是安全的（資料由 firestore.rules 保護）。
 window.APP_CONFIG = {
   firebase: {
-    apiKey: 'YOUR_API_KEY',
-    authDomain: 'your-project.firebaseapp.com',
-    projectId: 'your-project',
-    storageBucket: 'your-project.firebasestorage.app',
-    messagingSenderId: '000000000000',
-    appId: '1:000000000000:web:xxxxxxxx'
+    apiKey: 'AIzaSyCeViClzQVcT_qjPlLIAlUYmbezYq-7eMA',
+    authDomain: 'receipt-app-172f6.firebaseapp.com',
+    projectId: 'receipt-app-172f6',
+    storageBucket: 'receipt-app-172f6.firebasestorage.app',
+    messagingSenderId: '347525525996',
+    appId: '1:347525525996:web:0fdbc49b1b4a23042d10c9'
   },
   // AI 型號：如 Google 推出新型號或舊型號停用，在這裏更改（Firebase 後台 AI Logic 頁面有列出可用型號）
   GEMINI_MODEL: 'gemini-2.5-flash'
