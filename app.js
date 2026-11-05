@@ -1,7 +1,13 @@
 /* 小票簿 — 公司雜費收據記錄 (PWA)
- * 資料：Supabase（Postgres + Storage + Auth）
- * AI：Supabase Edge Function「read-receipt」轉發至 Google Gemini（API key 只存在伺服器）
+ * 登入：Firebase Authentication（電郵＋密碼）
+ * 資料：Cloud Firestore（即時同步；相片壓縮後存於 Firestore，免費 Spark 方案即可）
+ * AI：Firebase AI Logic → Gemini Developer API（免費額度，API key 不會出現在 App 內）
  */
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-app.js';
+import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js';
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, addDoc, setDoc, updateDoc, deleteDoc, getDoc, writeBatch } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js';
+import { getAI, getGenerativeModel, GoogleAIBackend } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-ai.js';
+
 const CATS=[
   {id:'food',zh:'餐飲食物',code:'6110',acct:'膳食及招待費'},
   {id:'stationery',zh:'文具',code:'6120',acct:'文具及辦公用品'},
@@ -13,7 +19,6 @@ const CATS=[
 const CAT_COLOR={food:'--c-food',stationery:'--c-stationery',transport:'--c-transport',hotel:'--c-transport',daily:'--c-daily',shipping:'--c-shipping',other:'--c-other'};
 const CURS=[['HKD','HK$'],['KRW','₩'],['JPY','JP¥'],['CNY','CN¥'],['TWD','NT$'],['USD','US$'],['EUR','€']];
 const DEFAULT_RATES={HKD:1,KRW:0.0056,JPY:0.0508,CNY:1.08,TWD:0.24,USD:7.78,EUR:8.4};
-const BUCKET='receipts';
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -28,8 +33,8 @@ const fmtCur=(n,c)=>sym(c)+(n||0).toLocaleString('en-US',{maximumFractionDigits:
 const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}};
 const lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
 
-let sb=null,me=null;
-let rows=[],reports=[],loaded=false,photoUrls={};
+let auth=null,db=null,model=null,me=null;
+let rows=[],reports=[],loaded=false,unsubs=[];
 let settings={rates:{...DEFAULT_RATES},accounts:{}};
 let tab='receipts',statusF='all',q='',filter=null,openReport=null,newRepOpen=false;
 let sRange=null,sDim='cat';
@@ -39,54 +44,20 @@ const cat=id=>{const c=CATS.find(c=>c.id===id)||CATS[CATS.length-1];const a=sett
 const rateOf=c=>Number(settings.rates?.[c])||DEFAULT_RATES[c]||1;
 const hkdOf=r=>typeof r.hkd==='number'&&!isNaN(r.hkd)?r.hkd:r2((Number(r.amount)||0)*(Number(r.rate)||rateOf(r.currency||'KRW')));
 const repName=id=>reports.find(x=>x.id===id)?.name||'';
-const imgUrl=r=>r.photoPath?photoUrls[r.photoPath]||'':'';
+const imgUrl=r=>r.thumb||'';
 
 function toast(t){const el=$('toast');el.textContent=t;el.hidden=false;clearTimeout(toast.t);toast.t=setTimeout(()=>el.hidden=true,2400)}
 
 // ---------- data layer ----------
-const fromDb=r=>({id:r.id,date:r.date,merchantZh:r.merchant_zh||'',merchantOrig:r.merchant_orig||'',amount:Number(r.amount)||0,
-  currency:r.currency||'KRW',rate:Number(r.rate)||0,hkd:Number(r.hkd),category:r.category,payMethod:r.pay_method||'',
-  reportId:r.report_id||'',tags:r.tags||[],note:r.note||'',items:r.items||[],photoPath:r.photo_path||'',
-  status:r.status||'pending',createdBy:r.created_by,createdByEmail:r.created_by_email||'',createdAt:r.created_at||''});
-const toDb=d=>{const o={};const map={date:'date',merchantZh:'merchant_zh',merchantOrig:'merchant_orig',amount:'amount',currency:'currency',rate:'rate',hkd:'hkd',
-  category:'category',payMethod:'pay_method',reportId:'report_id',tags:'tags',note:'note',items:'items',photoPath:'photo_path',status:'status'};
-  for(const k in d)if(k in map)o[map[k]]=k==='reportId'?(d[k]||null):d[k];return o};
-
-async function fetchAll(table,order){
-  const out=[];const size=1000;
-  for(let from=0;;from+=size){
-    const {data,error}=await sb.from(table).select('*').order(order,{ascending:false}).range(from,from+size-1);
-    if(error)throw error;out.push(...data);if(data.length<size)break;
-  }
-  return out;
+function subscribe(){
+  unsubs.forEach(u=>u());unsubs=[];
+  const timer=setTimeout(()=>{if(!loaded)$('rcList').innerHTML='<div class="empty"><strong>載入時間較長</strong><span>請檢查網絡，或確認 Firestore 已按 README 設定好。</span></div>'},10000);
+  const fail=e=>{console.error(e);clearTimeout(timer);$('rcList').innerHTML='<div class="empty"><strong>未能載入記錄</strong><span>'+(e?.code==='permission-denied'?'你沒有權限，請確認已登入公司帳戶，以及 Firestore 規則已設定。':'請檢查網絡後重新開啟。')+'</span></div>'};
+  unsubs.push(onSnapshot(collection(db,'expenses'),snap=>{clearTimeout(timer);loaded=true;rows=snap.docs.map(d=>({id:d.id,tags:[],items:[],...d.data()})).filter(r=>r.date);render()},fail));
+  unsubs.push(onSnapshot(collection(db,'reports'),snap=>{reports=snap.docs.map(d=>({id:d.id,...d.data()}));render()},()=>{}));
+  unsubs.push(onSnapshot(doc(db,'settings','main'),s=>{const d=s.exists()&&s.data();if(d){settings={rates:{...DEFAULT_RATES,...(d.rates||{})},accounts:d.accounts||{}};render()}},()=>{}));
 }
-let loading=false,again=false;
-async function loadAll(){
-  if(loading){again=true;return}
-  loading=true;
-  try{
-    const [ex,rp,st]=await Promise.all([fetchAll('expenses','date'),fetchAll('reports','created_at'),sb.from('settings').select('*').eq('id',1).maybeSingle()]);
-    rows=ex.map(fromDb);
-    reports=rp.map(r=>({id:r.id,name:r.name,createdAt:r.created_at}));
-    if(st.data)settings={rates:{...DEFAULT_RATES,...(st.data.rates||{})},accounts:st.data.accounts||{}};
-    loaded=true;render();
-    await signPhotos();
-  }catch(e){
-    console.error(e);
-    if(!loaded)$('rcList').innerHTML='<div class="empty"><strong>未能載入記錄</strong><span>請檢查網絡，或確認資料庫已按 README 設定好。</span></div>';
-    else toast('未能更新記錄，請檢查網絡');
-  }finally{loading=false;if(again){again=false;loadAll()}}
-}
-async function signPhotos(){
-  const need=[...new Set(rows.map(r=>r.photoPath).filter(p=>p&&!photoUrls[p]))];
-  if(!need.length)return;
-  for(let i=0;i<need.length;i+=100){
-    const {data}=await sb.storage.from(BUCKET).createSignedUrls(need.slice(i,i+100),60*60*12);
-    (data||[]).forEach(d=>{if(d.signedUrl)photoUrls[d.path]=d.signedUrl});
-  }
-  render();
-}
-let reloadT;function scheduleReload(){clearTimeout(reloadT);reloadT=setTimeout(loadAll,400)}
+const errMsg=e=>e?.code==='permission-denied'?'你沒有權限':e?.code==='unavailable'?'網絡中斷，恢復後會自動同步':(e?.message||'請再試');
 
 // ---------- shared row ----------
 function rowHtml(r){
@@ -261,10 +232,10 @@ function renderReports(){
     $('repExport').onclick=()=>exportXlsx(list,isNone?'未歸入報告':rep.name,isNone?'未歸入報告':rep.name);
     if(!isNone){
       $('repRename').onclick=()=>{$('repEdit').innerHTML=`<div class="newrep"><input id="repNameIn" value="${esc(rep.name)}" aria-label="報告名稱"><button class="primary" id="repNameOk">儲存</button></div>`;$('repNameIn').focus();
-        $('repNameOk').onclick=async()=>{const v=$('repNameIn').value.trim();if(!v)return;const {error}=await sb.from('reports').update({name:v}).eq('id',rep.id);if(error)toast('改名失敗');else{toast('已改名');loadAll()}}};
+        $('repNameOk').onclick=async()=>{const v=$('repNameIn').value.trim();if(!v)return;try{await updateDoc(doc(db,'reports',rep.id),{name:v});toast('已改名')}catch(e){toast('改名失敗：'+errMsg(e))}}};
       $('repDel').onclick=()=>{$('repEdit').innerHTML=`<div class="confirm">刪除報告「${esc(rep.name)}」？${list.length?'入面 '+list.length+' 張收據會移到「未歸入報告」，不會被刪除。':''}<button id="rdNo">取消</button><button class="danger" id="rdYes">確定刪除</button></div>`;
         $('rdNo').onclick=()=>$('repEdit').innerHTML='';
-        $('rdYes').onclick=async()=>{const {error}=await sb.from('reports').delete().eq('id',rep.id);if(error){toast('刪除失敗');return}openReport=null;toast('已刪除報告');loadAll()}};
+        $('rdYes').onclick=async()=>{try{for(let i=0;i<list.length;i+=400){const b=writeBatch(db);list.slice(i,i+400).forEach(r=>b.update(doc(db,'expenses',r.id),{reportId:''}));await b.commit()}await deleteDoc(doc(db,'reports',rep.id));openReport=null;toast('已刪除報告')}catch(e){toast('刪除失敗：'+errMsg(e))}}};
     }
     return;
   }
@@ -277,7 +248,7 @@ function renderReports(){
     ${none.length?`<button class="rep" data-r="__none"><span><div class="nm" style="color:var(--muted)">未歸入報告</div><div class="ct">${none.length}</div></span><span style="display:flex;gap:10px;align-items:center"><span class="tot">${fmtHKD(none.reduce((s,r)=>s+hkdOf(r),0))}</span><span class="chev">›</span></span></button>`:''}
     ${!reports.length&&!none.length?'<div class="card empty"><strong>還沒有報告</strong><span>報告可以將收據分組，例如按財年和貨幣（26-27 KRW）或按一次公司旅行。每份報告都可以獨立匯出會計報表。</span></div>':''}`;
   $('repNew').onclick=()=>{newRepOpen=!newRepOpen;$('repNewBox').hidden=!newRepOpen;if(newRepOpen)$('repNewName').focus()};
-  const create=async()=>{const v=$('repNewName').value.trim();if(!v){toast('請輸入報告名稱');return}const {error}=await sb.from('reports').insert({name:v});if(error){toast('建立失敗');return}newRepOpen=false;toast('已建立報告');loadAll()};
+  const create=async()=>{const v=$('repNewName').value.trim();if(!v){toast('請輸入報告名稱');return}try{await addDoc(collection(db,'reports'),{name:v,createdAt:new Date().toISOString(),createdBy:me.uid});newRepOpen=false;toast('已建立報告')}catch(e){toast('建立失敗：'+errMsg(e))}};
   $('repNewOk').onclick=create;$('repNewName').onkeydown=e=>{if(e.key==='Enter')create()};
   V.querySelectorAll('.rep').forEach(b=>b.onclick=()=>{openReport=b.dataset.r;renderReports();window.scrollTo(0,0)});
 }
@@ -332,34 +303,51 @@ drop.addEventListener('dragleave',()=>drop.classList.remove('over'));
 drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('over');const f=e.dataTransfer.files[0];if(f)handleFile(f)});
 $('file').onchange=e=>{const f=e.target.files[0];if(f)handleFile(f)};
 
-async function shrink(file){
-  try{const bmp=await createImageBitmap(file);const s=Math.min(1,1600/Math.max(bmp.width,bmp.height));
+// 相片壓縮：完整相片（約 1400px，< 450KB，存入 Firestore）＋ 縮圖（160px，放在收據記錄內）
+async function shrink(file,max=1400,maxBytes=450000){
+  const bmp=await createImageBitmap(file);
+  let s=Math.min(1,max/Math.max(bmp.width,bmp.height)),q=0.8,blob;
+  for(let i=0;i<6;i++){
     const c=document.createElement('canvas');c.width=Math.round(bmp.width*s);c.height=Math.round(bmp.height*s);
     c.getContext('2d').drawImage(bmp,0,0,c.width,c.height);
-    return await new Promise(r=>c.toBlob(b=>r(b||file),'image/jpeg',0.85));
-  }catch(e){return file}
+    blob=await new Promise(r=>c.toBlob(r,'image/jpeg',q));
+    if(blob.size<=maxBytes)break;
+    if(q>0.55)q-=0.1;else s*=0.8;
+  }
+  return blob;
 }
-const toB64=blob=>new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(String(fr.result).split(',')[1]);fr.onerror=rej;fr.readAsDataURL(blob)});
+const toDataUrl=blob=>new Promise((res,rej)=>{const fr=new FileReader();fr.onload=()=>res(String(fr.result));fr.onerror=rej;fr.readAsDataURL(blob)});
+const toB64=async blob=>(await toDataUrl(blob)).split(',')[1];
+
+const PROMPT=`You are reading a photo of a shop receipt for a Hong Kong company's expense log. Receipts are usually from South Korea, sometimes Japan, mainland China, Taiwan or Hong Kong.
+Return ONLY a JSON object with exactly these keys:
+{"date":"YYYY-MM-DD or empty string","merchant_orig":"store name exactly as printed","merchant_zh":"store name in Hong Kong Traditional Chinese (translate the meaning; keep well-known brand names such as GS25, CU, 7-Eleven, Olive Young, Daiso, Lawson as they are)","total":number (final amount actually paid, digits only),"currency":"KRW"|"JPY"|"CNY"|"TWD"|"HKD"|"USD"|"EUR","payment":"信用卡"|"現金"|"交通卡"|"其他","category":"food"|"stationery"|"transport"|"hotel"|"daily"|"shipping"|"other","items":[{"orig":"item as printed","zh":"Hong Kong Traditional Chinese translation","qty":number,"amount":number}],"summary_zh":"one short sentence in Hong Kong Traditional Chinese describing what was bought"}
+Category guide: food = restaurants, cafes, bakeries, convenience-store food and drinks, snacks; stationery = pens, paper, notebooks, printing, office supplies (알파 문구, 모닝글로리); transport = taxi, train, KTX, subway, bus, car rental, parking, fuel, toll; hotel = hotels, guesthouses, accommodation; daily = cleaning, toiletries, household goods, Daiso general goods; shipping = post office (우체국, 郵便局), couriers (CJ대한통운, 택배, ヤマト); other = anything else.
+Currency: Korean text or ₩/원 = KRW; Japanese or 円/¥ in Japan = JPY; simplified Chinese or 元 = CNY.
+If mixed, choose the category with the largest amount. At most 20 item lines.`;
 
 async function handleFile(file){
   if(!file.type.startsWith('image/')){toast('請選擇相片檔案');return}
-  const blob=await shrink(file);const url=URL.createObjectURL(blob);
+  let blob,thumb;
+  try{blob=await shrink(file);thumb=await toDataUrl(await shrink(blob,160,30000))}catch(e){toast('未能讀取這張相片，請試另一張');return}
+  const url=URL.createObjectURL(blob);
   if(pending?.url)URL.revokeObjectURL(pending.url);
-  pending={blob,url};
+  pending={blob,url,thumb};
   $('prevImg').src=url;$('preview').hidden=false;$('drop').hidden=true;
   const box=$('aiBox');box.className='ai';
   box.innerHTML='<strong>正在讀取及翻譯…</strong><span>大約需要幾秒至十幾秒</span>';
   try{
-    const {data,error}=await sb.functions.invoke('read-receipt',{body:{image:await toB64(blob),mime:blob.type||'image/jpeg'}});
+    if(!model)throw new Error('AI not configured');
+    const res=await model.generateContent([PROMPT,{inlineData:{data:await toB64(blob),mimeType:'image/jpeg'}}]);
     if(pending?.blob!==blob)return;
-    if(error||!data||data.error)throw (data?.error||error);
-    applyAi(data);
+    const text=res.response.text().replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/,'').trim();
+    applyAi(JSON.parse(text));
   }catch(e){
     if(pending?.blob!==blob)return;
     console.warn(e);
     const msg=String(e?.message||e||'');
     box.className='ai err';
-    box.innerHTML=/429|quota|rate/i.test(msg)?'<strong>今日免費 AI 次數可能已用完</strong><span>請稍後再試，或先手動填寫。</span>'
+    box.innerHTML=/429|quota|rate|exhausted/i.test(msg)?'<strong>今日免費 AI 次數可能已用完</strong><span>請稍後再試，或先手動填寫。</span>'
       :'<strong>讀取失敗</strong><span>相片可能太模糊，或 AI 功能未設定好。請手動填寫資料。</span>';
   }
 }
@@ -392,29 +380,23 @@ $('saveBtn').onclick=async()=>{
   const t=$('tagIn')?.value.trim();if(t&&!formTags.includes(t))formTags.push(t.slice(0,20));
   const btn=$('saveBtn');btn.disabled=true;btn.textContent='儲存中…';
   try{
-    const oldPath=editing?.photoPath||'';let photoPath=oldPath;
-    if(pending?.blob){
-      photoPath=me.id+'/'+(crypto.randomUUID?crypto.randomUUID():Date.now()+'-'+Math.random().toString(36).slice(2))+'.jpg';
-      const {error}=await sb.storage.from(BUCKET).upload(photoPath,pending.blob,{contentType:'image/jpeg'});
-      if(error)throw error;
-    }
     const cur=$('fCur').value;
     const data={date:$('fDate').value,merchantZh:$('fMerchZh').value.trim(),merchantOrig:$('fMerchOrig').value.trim(),
       amount,currency:cur,rate,hkd:r2(amount*rate),category:$('fCat').value,payMethod:$('fPay').value,
-      reportId:$('fRep').value,tags:formTags.slice(0,10),note:$('fNote').value.trim(),photoPath};
+      reportId:$('fRep').value,tags:formTags.slice(0,10),note:$('fNote').value.trim()};
     if(pending?.items)data.items=pending.items;
-    if(editing){
-      data.status=$('fStatus').value;
-      const {error}=await sb.from('expenses').update(toDb(data)).eq('id',editing.id);if(error)throw error;
-      if(pending?.blob&&oldPath)sb.storage.from(BUCKET).remove([oldPath]);
-    }else{
-      const {error}=await sb.from('expenses').insert(toDb({...data,items:data.items||[],status:'pending'}));if(error)throw error;
+    const ref=editing?doc(db,'expenses',editing.id):doc(collection(db,'expenses'));
+    if(pending?.blob){
+      await setDoc(doc(db,'photos',ref.id),{data:await toDataUrl(pending.blob),by:me.uid,at:new Date().toISOString()});
+      data.thumb=pending.thumb;data.hasPhoto=true;
     }
+    if(editing){data.status=$('fStatus').value;await updateDoc(ref,data)}
+    else await setDoc(ref,{items:[],thumb:'',hasPhoto:false,...data,status:'pending',createdBy:me.uid,createdByEmail:me.email||'',createdAt:new Date().toISOString()});
     lsSet('lastCur',cur);lsSet('lastReport',data.reportId);
-    closeForm();$('detScrim').hidden=true;toast('已儲存');loadAll();
+    closeForm();$('detScrim').hidden=true;toast('已儲存');
   }catch(e){
     console.error(e);btn.disabled=false;btn.textContent='儲存收據';
-    toast('儲存失敗：'+(e?.message||'請再試'));
+    toast('儲存失敗：'+errMsg(e));
   }
 };
 
@@ -424,7 +406,7 @@ function openDetail(id){
   const c=cat(r.category);const u=imgUrl(r);
   $('detTitle').textContent=r.merchantZh||r.merchantOrig||'收據';
   $('detBody').innerHTML=`
-    ${u?`<a href="${esc(u)}" target="_blank" rel="noopener"><img class="detailimg" src="${esc(u)}" alt="收據相片"></a>`:''}
+    ${r.hasPhoto?`<img class="detailimg" id="dImg" src="${esc(u)}" alt="收據相片">`:''}
     <dl class="kv">
       <dt>日期</dt><dd class="num">${esc(r.date)}</dd>
       <dt>商戶</dt><dd>${esc(r.merchantZh)} ${r.merchantOrig?`<span class="ko" style="color:var(--muted)">${esc(r.merchantOrig)}</span>`:''}</dd>
@@ -444,12 +426,13 @@ function openDetail(id){
       <button class="primary" id="dToggle">${r.status==='done'?'改回待報銷':'標記已報銷'}</button>
     </div>`;
   $('detScrim').hidden=false;
+  if(r.hasPhoto)getDoc(doc(db,'photos',id)).then(s=>{const d=s.exists()&&s.data()?.data;if(d&&$('dImg')){$('dImg').src=d;$('dImg').onclick=()=>{const w=window.open();if(w)w.document.write('<img src="'+d+'" style="max-width:100%">')}}}).catch(()=>{});
   $('dEdit').onclick=()=>{$('detScrim').hidden=true;openForm(r)};
-  $('dToggle').onclick=async()=>{const {error}=await sb.from('expenses').update({status:r.status==='done'?'pending':'done'}).eq('id',id);if(error){toast('更新失敗');return}$('detScrim').hidden=true;toast('已更新');loadAll()};
+  $('dToggle').onclick=async()=>{try{await updateDoc(doc(db,'expenses',id),{status:r.status==='done'?'pending':'done'});$('detScrim').hidden=true;toast('已更新')}catch(e){toast('更新失敗：'+errMsg(e))}};
   $('dDel').onclick=()=>{
     $('detActs').innerHTML='<div class="confirm">確定刪除這張收據？<button id="dNo">取消</button><button class="danger" id="dYes">確定刪除</button></div>';
     $('dNo').onclick=()=>openDetail(id);
-    $('dYes').onclick=async()=>{const {error}=await sb.from('expenses').delete().eq('id',id);if(error){toast('刪除失敗');return}if(r.photoPath)sb.storage.from(BUCKET).remove([r.photoPath]);$('detScrim').hidden=true;toast('已刪除');loadAll()};
+    $('dYes').onclick=async()=>{try{await deleteDoc(doc(db,'expenses',id));if(r.hasPhoto)deleteDoc(doc(db,'photos',id)).catch(()=>{});$('detScrim').hidden=true;toast('已刪除')}catch(e){toast('刪除失敗：'+errMsg(e))}};
   };
 }
 $('detClose').onclick=()=>$('detScrim').hidden=true;
@@ -468,12 +451,11 @@ $('setScrim').onclick=e=>{if(e.target===$('setScrim'))$('setScrim').hidden=true}
 $('setSave').onclick=async()=>{
   const rates={HKD:1};CURS.forEach(c=>{if(c[0]==='HKD')return;const v=parseFloat($('rt-'+c[0]).value);rates[c[0]]=v>0?v:DEFAULT_RATES[c[0]]});
   const accounts={};CATS.forEach(c=>accounts[c.id]={code:$('ac-'+c.id).value.trim()||c.code,acct:$('an-'+c.id).value.trim()||c.acct});
-  const {error}=await sb.from('settings').upsert({id:1,rates,accounts});
-  if(error){toast('未能儲存設定');return}
+  try{await setDoc(doc(db,'settings','main'),{rates,accounts})}catch(e){toast('未能儲存設定：'+errMsg(e));return}
   settings={rates,accounts};render();$('setScrim').hidden=true;toast('已儲存設定');
 };
-$('pwBtn').onclick=async()=>{const pw=$('newPw').value;if(pw.length<8){toast('密碼最少 8 個字');return}const {error}=await sb.auth.updateUser({password:pw});if(error)toast('更改失敗：'+error.message);else{$('newPw').value='';toast('已更改密碼')}};
-$('logoutBtn').onclick=async()=>{await sb.auth.signOut();$('setScrim').hidden=true};
+$('pwBtn').onclick=async()=>{const pw=$('newPw').value;if(pw.length<8){toast('密碼最少 8 個字');return}try{await updatePassword(auth.currentUser,pw);$('newPw').value='';toast('已更改密碼')}catch(e){toast(e?.code==='auth/requires-recent-login'?'為安全起見，請先登出再登入，然後再改密碼':'更改失敗：'+(e?.message||''))}};
+$('logoutBtn').onclick=async()=>{await signOut(auth);$('setScrim').hidden=true};
 
 // ---------- export ----------
 function exportXlsx(list,name,period){
@@ -485,7 +467,7 @@ function exportXlsx(list,name,period){
   const detail=list.map(r=>{const c=cat(r.category);const d=(r.date||'').replace(/-/g,'').slice(2);seq[d]=(seq[d]||0)+1;return [
     'EXP-'+d+'-'+pad(seq[d]),r.date,c.code,c.acct,r.note||((r.merchantZh||r.merchantOrig||'')+' '+c.zh),r.merchantZh,r.merchantOrig,
     r.currency,r.amount,r.rate||rateOf(r.currency),hkdOf(r),r.payMethod,(r.tags||[]).join('、'),repName(r.reportId),
-    r.photoPath?'有':'無',r.status==='done'?'已報銷':'待報銷',r.createdByEmail,(r.items||[]).map(it=>it.zh+(it.orig?'（'+it.orig+'）':'')+' ×'+it.qty+' '+it.amount).join('；')]});
+    r.hasPhoto?'有':'無',r.status==='done'?'已報銷':'待報銷',r.createdByEmail,(r.items||[]).map(it=>it.zh+(it.orig?'（'+it.orig+'）':'')+' ×'+it.qty+' '+it.amount).join('；')]});
   const tHkd=r2(list.reduce((s,r)=>s+hkdOf(r),0));
   detail.push(['合計','','','','','','','','','',tHkd,'','','','','','','']);
   const pend=l=>r2(l.filter(r=>r.status!=='done').reduce((s,r)=>s+hkdOf(r),0));
@@ -507,26 +489,24 @@ function showView(v){['setupView','loginView','appView'].forEach(x=>$(x).hidden=
 let started=false;
 function startApp(user){
   me=user;showView('appView');
-  if(started){render();return}
-  started=true;
-  {const h=location.hash.slice(1);if(['receipts','stats','reports'].includes(h))tab=h}
-  setTab(tab);loadAll();
-  sb.channel('db-changes').on('postgres_changes',{event:'*',schema:'public'},scheduleReload).subscribe();
-  document.addEventListener('visibilitychange',()=>{if(!document.hidden)scheduleReload()});
-  setInterval(()=>{photoUrls={};signPhotos()},1000*60*60*10);
+  if(!started){started=true;const h=location.hash.slice(1);if(['receipts','stats','reports'].includes(h))tab=h}
+  setTab(tab);subscribe();
 }
 $('loginForm').onsubmit=async e=>{
   e.preventDefault();$('loginErr').hidden=true;$('loginBtn').disabled=true;
-  const {error}=await sb.auth.signInWithPassword({email:$('loginEmail').value.trim(),password:$('loginPw').value});
-  $('loginBtn').disabled=false;
-  if(error){$('loginErr').textContent=/invalid/i.test(error.message)?'電郵或密碼不正確':'登入失敗：'+error.message;$('loginErr').hidden=false}
+  try{await signInWithEmailAndPassword(auth,$('loginEmail').value.trim(),$('loginPw').value)}
+  catch(err){$('loginErr').textContent=/invalid|wrong-password|user-not-found/.test(err?.code||'')?'電郵或密碼不正確':err?.code==='auth/too-many-requests'?'嘗試次數太多，請稍後再試':'登入失敗：'+(err?.code||err?.message);$('loginErr').hidden=false}
+  finally{$('loginBtn').disabled=false}
 };
-(async()=>{
+{
   const cfg=window.APP_CONFIG||{};
-  if(!cfg.SUPABASE_URL||!cfg.SUPABASE_ANON_KEY||/YOUR_/.test(cfg.SUPABASE_URL)){showView('setupView');return}
-  sb=window.supabase.createClient(cfg.SUPABASE_URL,cfg.SUPABASE_ANON_KEY);
-  const {data:{session}}=await sb.auth.getSession();
-  if(session)startApp(session.user);else showView('loginView');
-  sb.auth.onAuthStateChange((ev,s)=>{if(s?.user)startApp(s.user);else{me=null;showView('loginView')}});
+  if(!cfg.firebase?.apiKey||/YOUR_/.test(cfg.firebase.apiKey)){showView('setupView')}
+  else{
+    const app=initializeApp(cfg.firebase);
+    auth=getAuth(app);
+    try{db=initializeFirestore(app,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})})}catch(e){db=initializeFirestore(app,{})}
+    try{model=getGenerativeModel(getAI(app,{backend:new GoogleAIBackend()}),{model:cfg.GEMINI_MODEL||'gemini-2.5-flash',generationConfig:{responseMimeType:'application/json',temperature:0.1}})}catch(e){console.warn('AI unavailable',e)}
+    onAuthStateChanged(auth,u=>{if(u)startApp(u);else{me=null;unsubs.forEach(f=>f());unsubs=[];rows=[];loaded=false;showView('loginView')}});
+  }
   if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
-})();
+}

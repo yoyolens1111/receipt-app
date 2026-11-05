@@ -1,0 +1,10 @@
+rules_version = '2';
+// 只有已登入的公司帳戶可以讀寫。帳戶由管理員在 Firebase 後台建立，並關閉自行註冊。
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /expenses/{id} { allow read, write: if request.auth != null; }
+    match /reports/{id}  { allow read, write: if request.auth != null; }
+    match /settings/{id} { allow read, write: if request.auth != null; }
+    match /photos/{id}   { allow read, write: if request.auth != null; }
+  }
+}
