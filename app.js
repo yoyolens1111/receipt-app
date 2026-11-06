@@ -333,9 +333,13 @@ If mixed, choose the category with the largest amount. At most 20 item lines.`;
 
 // 後備方法：直接用 Google AI Studio 的 Gemini key（config.js 的 GEMINI_API_KEY）
 async function geminiDirect(m,b64){
-  const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`,{method:'POST',
+  const ctl=new AbortController();const t=setTimeout(()=>ctl.abort(),25000);
+  let r;
+  try{r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`,{method:'POST',
     headers:{'Content-Type':'application/json','x-goog-api-key':GEMINI_KEY},
-    body:JSON.stringify({contents:[{parts:[{text:PROMPT},{inline_data:{mime_type:'image/jpeg',data:b64}}]}],generationConfig:{responseMimeType:'application/json',temperature:0.1}})});
+    body:JSON.stringify({contents:[{parts:[{text:PROMPT},{inline_data:{mime_type:'image/jpeg',data:b64}}]}],generationConfig:{responseMimeType:'application/json',temperature:0.1}}),signal:ctl.signal});
+  }catch(e){const err=new Error(e?.name==='AbortError'?'等候超過 25 秒（'+m+'）':String(e?.message||e));err.customErrorData={status:504};throw err}
+  finally{clearTimeout(t)}
   const j=await r.json().catch(()=>({}));
   if(!r.ok){const e=new Error(j?.error?.message||('HTTP '+r.status));e.customErrorData={status:r.status};e.code=j?.error?.status;throw e}
   return (j.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join('');
@@ -352,19 +356,39 @@ async function handleFile(file){
 }
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 // 繁忙（503/500/429）時：同一型號等一陣再試，再唔得就換下一個型號
+// 用金鑰查詢 Google 現時提供的 Gemini 型號，優先用較新、穩定的 flash 型號
+let discovered=null;
+async function discoverModels(){
+  if(!GEMINI_KEY)return MODELS;
+  if(discovered&&discovered.key===GEMINI_KEY)return discovered.list;
+  let list=[];
+  try{
+    const r=await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200',{headers:{'x-goog-api-key':GEMINI_KEY}});
+    const j=await r.json();
+    const ver=n=>parseFloat((/gemini-(\d+(?:\.\d+)?)/.exec(n)||[])[1]||0);
+    list=(j.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent'))
+      .map(m=>String(m.name||'').replace(/^models\//,''))
+      .filter(n=>/^gemini-[\d.]+-flash/.test(n)&&!/(image|tts|audio|live|embed|thinking|exp|robotics|computer)/i.test(n)&&!/-\d{3}$/.test(n))
+      .sort((a,b)=>(/preview/.test(a)-/preview/.test(b))||(ver(b)-ver(a))||(/lite/.test(a)-/lite/.test(b)))
+      .slice(0,4);
+  }catch(e){console.warn('list models failed',e)}
+  discovered={key:GEMINI_KEY,list:[...new Set([...list,...MODELS])].slice(0,5)};
+  return discovered.list;
+}
 async function callAi(b64,onStatus){
   let lastErr;
-  for(const m of MODELS){
+  const models=await discoverModels();
+  for(const m of models){
+    onStatus?.('正在讀取及翻譯…（'+m+'）');
     for(let attempt=0;attempt<2;attempt++){
       try{return GEMINI_KEY?await geminiDirect(m,b64):(await modelFor(m).generateContent([PROMPT,{inlineData:{data:b64,mimeType:'image/jpeg'}}])).response.text()}
       catch(err){
         lastErr=err;const st=aiStatus(err);
         if(st===404)break;                       // 型號不存在：直接試下一個
         if(![429,500,502,503,504].includes(st))throw err; // 其他錯誤（例如金鑰問題）：不用再試
-        if(attempt===0){onStatus?.('AI 伺服器繁忙，自動重試中…');await sleep(2500)}
+        if(attempt===0&&st!==504){onStatus?.('AI 伺服器繁忙，自動重試中…（'+m+'）');await sleep(2500)}else break;
       }
     }
-    onStatus?.('換另一個 AI 型號再試…');
   }
   throw lastErr;
 }
@@ -382,7 +406,8 @@ async function readAi(blob){
     console.warn(e);
     const st=aiStatus(e),msg=String(e?.message||e||'');
     box.className='ai err';
-    const title=[500,502,503,504].includes(st)||/high demand|overloaded|UNAVAILABLE/i.test(msg)?'AI 伺服器而家太繁忙'
+    const title=st===504?'AI 回應太慢（Google 伺服器繁忙）'
+      :[500,502,503].includes(st)||/high demand|overloaded|UNAVAILABLE/i.test(msg)?'AI 伺服器而家太繁忙'
       :st===429||/RESOURCE_EXHAUSTED/.test(msg)?'AI 暫時太多人用，或今日免費次數已用完'
       :st===400&&/API key|API_KEY/i.test(msg)?'AI 金鑰無效，請到設定重新貼上'
       :st===403||/PERMISSION_DENIED|API has not been used|disabled/i.test(msg)?'AI 服務未開通或仍在生效中（剛啟用需等幾分鐘）'
