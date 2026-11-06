@@ -33,7 +33,10 @@ const fmtCur=(n,c)=>sym(c)+(n||0).toLocaleString('en-US',{maximumFractionDigits:
 const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}};
 const lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
 
-let auth=null,db=null,model=null,me=null;
+let auth=null,db=null,aiRoot=null,me=null,MODELS=['gemini-2.5-flash'];
+const modelCache={};
+const modelFor=m=>modelCache[m]||(modelCache[m]=getGenerativeModel(aiRoot,{model:m,generationConfig:{responseMimeType:'application/json',temperature:0.1}}));
+const aiStatus=e=>e?.customErrorData?.status||(/\[(\d{3})/.exec(String(e?.message||''))||[])[1]*1||0;
 let rows=[],reports=[],loaded=false,unsubs=[];
 let settings={rates:{...DEFAULT_RATES},accounts:{}};
 let tab='receipts',statusF='all',q='',filter=null,openReport=null,newRepOpen=false;
@@ -337,18 +340,29 @@ async function handleFile(file){
   const box=$('aiBox');box.className='ai';
   box.innerHTML='<strong>正在讀取及翻譯…</strong><span>大約需要幾秒至十幾秒</span>';
   try{
-    if(!model)throw new Error('AI not configured');
-    const res=await model.generateContent([PROMPT,{inlineData:{data:await toB64(blob),mimeType:'image/jpeg'}}]);
+    if(!aiRoot)throw new Error('AI not configured');
+    const parts=[PROMPT,{inlineData:{data:await toB64(blob),mimeType:'image/jpeg'}}];
+    let res,lastErr;
+    // 如設定的型號已停用（404），自動試下一個
+    for(const m of MODELS){
+      try{res=await modelFor(m).generateContent(parts);lastErr=null;break}
+      catch(err){lastErr=err;if(aiStatus(err)!==404)break}
+    }
+    if(lastErr)throw lastErr;
     if(pending?.blob!==blob)return;
     const text=res.response.text().replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/,'').trim();
     applyAi(JSON.parse(text));
   }catch(e){
     if(pending?.blob!==blob)return;
     console.warn(e);
-    const msg=String(e?.message||e||'');
+    const st=aiStatus(e),msg=String(e?.message||e||'');
     box.className='ai err';
-    box.innerHTML=/429|quota|rate|exhausted/i.test(msg)?'<strong>今日免費 AI 次數可能已用完</strong><span>請稍後再試，或先手動填寫。</span>'
-      :'<strong>讀取失敗</strong><span>相片可能太模糊，或 AI 功能未設定好。請手動填寫資料。</span>';
+    const title=st===429||/RESOURCE_EXHAUSTED/.test(msg)?'AI 暫時太多人用，或今日免費次數已用完'
+      :st===403||/PERMISSION_DENIED|API has not been used|disabled/i.test(msg)?'AI 服務未開通或仍在生效中（剛啟用需等幾分鐘）'
+      :st===404?'AI 型號不可用'
+      :e instanceof SyntaxError?'AI 回覆格式有誤，請再試一次'
+      :'讀取失敗';
+    box.innerHTML=`<strong>${title}</strong><span>請稍後再試，或先手動填寫。</span><details><summary style="cursor:pointer;font-size:12px">技術資料</summary><code style="font-size:11px;word-break:break-all">${esc((st?st+' · ':'')+(e?.code?e.code+' · ':'')+msg.slice(0,300))}</code></details>`;
   }
 }
 function applyAi(o){
@@ -505,7 +519,8 @@ $('loginForm').onsubmit=async e=>{
     const app=initializeApp(cfg.firebase);
     auth=getAuth(app);
     try{db=initializeFirestore(app,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})})}catch(e){db=initializeFirestore(app,{})}
-    try{model=getGenerativeModel(getAI(app,{backend:new GoogleAIBackend()}),{model:cfg.GEMINI_MODEL||'gemini-2.5-flash',generationConfig:{responseMimeType:'application/json',temperature:0.1}})}catch(e){console.warn('AI unavailable',e)}
+    try{aiRoot=getAI(app,{backend:new GoogleAIBackend()})}catch(e){console.warn('AI unavailable',e)}
+    MODELS=[...new Set([cfg.GEMINI_MODEL||'gemini-2.5-flash','gemini-flash-latest','gemini-2.5-flash-lite'])];
     onAuthStateChanged(auth,u=>{if(u)startApp(u);else{me=null;unsubs.forEach(f=>f());unsubs=[];rows=[];loaded=false;showView('loginView')}});
   }
   if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
