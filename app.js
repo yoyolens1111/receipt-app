@@ -410,7 +410,8 @@ async function readAi(blob){
     console.warn(e);
     const st=aiStatus(e),msg=String(e?.message||e||'');
     box.className='ai err';
-    const title=st===504?'AI 回應太慢（Google 伺服器繁忙）'
+    const title=/location is not supported/i.test(msg)?'Google 免費 Gemini API 不支援香港地區'
+      :st===504?'AI 回應太慢（Google 伺服器繁忙）'
       :[500,502,503].includes(st)||/high demand|overloaded|UNAVAILABLE/i.test(msg)?'AI 伺服器而家太繁忙'
       :st===429||/RESOURCE_EXHAUSTED/.test(msg)?'AI 暫時太多人用，或今日免費次數已用完'
       :st===400&&/API key|API_KEY/i.test(msg)?'AI 金鑰無效，請到設定重新貼上'
