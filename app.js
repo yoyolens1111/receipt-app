@@ -33,7 +33,7 @@ const fmtCur=(n,c)=>sym(c)+(n||0).toLocaleString('en-US',{maximumFractionDigits:
 const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}};
 const lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
 
-let auth=null,db=null,aiRoot=null,me=null,MODELS=['gemini-2.5-flash'];
+let auth=null,db=null,aiRoot=null,me=null,MODELS=['gemini-2.5-flash'],GEMINI_KEY='';
 const modelCache={};
 const modelFor=m=>modelCache[m]||(modelCache[m]=getGenerativeModel(aiRoot,{model:m,generationConfig:{responseMimeType:'application/json',temperature:0.1}}));
 const aiStatus=e=>e?.customErrorData?.status||(/\[(\d{3})/.exec(String(e?.message||''))||[])[1]*1||0;
@@ -329,6 +329,15 @@ Category guide: food = restaurants, cafes, bakeries, convenience-store food and 
 Currency: Korean text or ₩/원 = KRW; Japanese or 円/¥ in Japan = JPY; simplified Chinese or 元 = CNY.
 If mixed, choose the category with the largest amount. At most 20 item lines.`;
 
+// 後備方法：直接用 Google AI Studio 的 Gemini key（config.js 的 GEMINI_API_KEY）
+async function geminiDirect(m,b64){
+  const r=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`,{method:'POST',
+    headers:{'Content-Type':'application/json','x-goog-api-key':GEMINI_KEY},
+    body:JSON.stringify({contents:[{parts:[{text:PROMPT},{inline_data:{mime_type:'image/jpeg',data:b64}}]}],generationConfig:{responseMimeType:'application/json',temperature:0.1}})});
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok){const e=new Error(j?.error?.message||('HTTP '+r.status));e.customErrorData={status:r.status};e.code=j?.error?.status;throw e}
+  return (j.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join('');
+}
 async function handleFile(file){
   if(!file.type.startsWith('image/')){toast('請選擇相片檔案');return}
   let blob,thumb;
@@ -340,17 +349,16 @@ async function handleFile(file){
   const box=$('aiBox');box.className='ai';
   box.innerHTML='<strong>正在讀取及翻譯…</strong><span>大約需要幾秒至十幾秒</span>';
   try{
-    if(!aiRoot)throw new Error('AI not configured');
-    const parts=[PROMPT,{inlineData:{data:await toB64(blob),mimeType:'image/jpeg'}}];
-    let res,lastErr;
+    const b64=await toB64(blob);
+    let text,lastErr;
     // 如設定的型號已停用（404），自動試下一個
     for(const m of MODELS){
-      try{res=await modelFor(m).generateContent(parts);lastErr=null;break}
+      try{text=GEMINI_KEY?await geminiDirect(m,b64):(await modelFor(m).generateContent([PROMPT,{inlineData:{data:b64,mimeType:'image/jpeg'}}])).response.text();lastErr=null;break}
       catch(err){lastErr=err;if(aiStatus(err)!==404)break}
     }
     if(lastErr)throw lastErr;
     if(pending?.blob!==blob)return;
-    const text=res.response.text().replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/,'').trim();
+    text=text.replace(/^```(?:json)?\s*/i,'').replace(/```\s*$/,'').trim();
     applyAi(JSON.parse(text));
   }catch(e){
     if(pending?.blob!==blob)return;
@@ -520,6 +528,7 @@ $('loginForm').onsubmit=async e=>{
     auth=getAuth(app);
     try{db=initializeFirestore(app,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})})}catch(e){db=initializeFirestore(app,{})}
     try{aiRoot=getAI(app,{backend:new GoogleAIBackend()})}catch(e){console.warn('AI unavailable',e)}
+    GEMINI_KEY=(cfg.GEMINI_API_KEY||'').trim();
     MODELS=[...new Set([cfg.GEMINI_MODEL||'gemini-2.5-flash','gemini-flash-latest','gemini-2.5-flash-lite'])];
     onAuthStateChanged(auth,u=>{if(u)startApp(u);else{me=null;unsubs.forEach(f=>f());unsubs=[];rows=[];loaded=false;showView('loginView')}});
   }
