@@ -38,7 +38,7 @@ const modelCache={};
 const modelFor=m=>modelCache[m]||(modelCache[m]=getGenerativeModel(aiRoot,{model:m,generationConfig:{responseMimeType:'application/json',temperature:0.1}}));
 const aiStatus=e=>e?.customErrorData?.status||(/\[(\d{3})/.exec(String(e?.message||''))||[])[1]*1||0;
 let rows=[],reports=[],loaded=false,unsubs=[];
-let settings={rates:{...DEFAULT_RATES},accounts:{}};
+let settings={rates:{...DEFAULT_RATES},accounts:{},photoQuality:'standard'};
 let tab='receipts',statusF='all',q='',filter=null,openReport=null,newRepOpen=false;
 let sRange=null,sDim='cat';
 let editing=null,pending=null,formTags=[];
@@ -60,7 +60,7 @@ function subscribe(){
   unsubs.push(onSnapshot(collection(db,'reports'),snap=>{reports=snap.docs.map(d=>({id:d.id,...d.data()}));render()},()=>{}));
   // AI 金鑰存於 Firestore（只有已登入的成員可讀），不會出現在公開的程式碼
   unsubs.push(onSnapshot(doc(db,'settings','ai'),s=>{const k=s.exists()&&s.data()?.geminiKey;GEMINI_KEY=(k||CFG_KEY||'').trim();updAiKeyState()},()=>{}));
-  unsubs.push(onSnapshot(doc(db,'settings','main'),s=>{const d=s.exists()&&s.data();if(d){settings={rates:{...DEFAULT_RATES,...(d.rates||{})},accounts:d.accounts||{}};render()}},()=>{}));
+  unsubs.push(onSnapshot(doc(db,'settings','main'),s=>{const d=s.exists()&&s.data();if(d){settings={rates:{...DEFAULT_RATES,...(d.rates||{})},accounts:d.accounts||{},photoQuality:d.photoQuality||'standard'};render()}},()=>{}));
 }
 const errMsg=e=>e?.code==='permission-denied'?'你沒有權限':e?.code==='unavailable'?'網絡中斷，恢復後會自動同步':(e?.message||'請再試');
 
@@ -107,6 +107,7 @@ function renderReceipts(){
   if(filter)list=list.filter(filter.fn);
   $('fBanner').hidden=!filter;if(filter)$('fText').textContent='篩選：'+filter.label;
   $('rcSub').textContent=list.length+' 張收據 · '+fmtHKD(list.reduce((s,r)=>s+hkdOf(r),0));
+  {const u=usageText();const n=$('notice');if(loaded&&u.pct>80){n.innerHTML='<span>免費容量已用 '+u.pct.toFixed(0)+'%。請到「報告」匯出備份 ZIP，或聯絡管理員。</span>';n.hidden=false}else n.hidden=true}
   $('rcList').innerHTML=!loaded?'<div class="empty">正在載入記錄…</div>':groupedList(sortDesc(list),rows.length?['沒有符合的收據','試下改搜尋字眼或清除篩選。']:['還沒有收據','按右上角「＋」影相上載，系統會讀取外文收據、翻譯成中文並自動分類。']);
 }
 $('q').oninput=e=>{q=e.target.value.trim();renderReceipts()};
@@ -218,6 +219,7 @@ $('sBreak').onclick=e=>{
   setTab('receipts');
 };
 $('sAll').onclick=()=>{const range={...sRange};filter={fn:r=>r.date>=range.from&&r.date<=range.to,label:range.from.replace(/-/g,'/')+'–'+range.to.replace(/-/g,'/')};setTab('receipts')};
+$('sZip').onclick=e=>exportZip(rows.filter(inRange),'公司雜費-'+sRange.from+'至'+sRange.to,sRange.from.replace(/-/g,'/')+' – '+sRange.to.replace(/-/g,'/'),e.currentTarget);
 $('sExport').onclick=()=>exportXlsx(rows.filter(inRange),'公司雜費-'+sRange.from+'至'+sRange.to,sRange.from.replace(/-/g,'/')+' – '+sRange.to.replace(/-/g,'/'));
 
 // ---------- 報告 ----------
@@ -231,10 +233,11 @@ function renderReports(){
     V.innerHTML=`<div class="bar"><button id="repBack">‹ 報告</button><div class="chips">${isNone?'':'<button id="repRename">改名</button><button id="repDel" class="danger">刪除</button>'}</div></div>
       <div><h1 style="font-size:28px">${esc(isNone?'未歸入報告':rep.name)}</h1><div class="sub num">${list.length} 張收據 · ${fmtHKD(tot)}</div></div>
       <div id="repEdit"></div>
-      <button class="primary" id="repExport">匯出此報告會計報表（Excel）</button>
+      <div class="chips"><button class="primary" id="repExport">匯出 Excel</button><button id="repZip">匯出備份 ZIP（Excel＋相片）</button></div>
       <div class="list">${groupedList(list,['這個報告還沒有收據','新增收據時，在「報告」揀選這個報告。'])}</div>`;
     $('repBack').onclick=()=>{openReport=null;renderReports()};
     $('repExport').onclick=()=>exportXlsx(list,isNone?'未歸入報告':rep.name,isNone?'未歸入報告':rep.name);
+    $('repZip').onclick=e=>exportZip(list,isNone?'未歸入報告':rep.name,isNone?'未歸入報告':rep.name,e.currentTarget);
     if(!isNone){
       $('repRename').onclick=()=>{$('repEdit').innerHTML=`<div class="newrep"><input id="repNameIn" value="${esc(rep.name)}" aria-label="報告名稱"><button class="primary" id="repNameOk">儲存</button></div>`;$('repNameIn').focus();
         $('repNameOk').onclick=async()=>{const v=$('repNameIn').value.trim();if(!v)return;try{await updateDoc(doc(db,'reports',rep.id),{name:v});toast('已改名')}catch(e){toast('改名失敗：'+errMsg(e))}}};
@@ -347,7 +350,8 @@ async function geminiDirect(m,b64){
 async function handleFile(file){
   if(!file.type.startsWith('image/')){toast('請選擇相片檔案');return}
   let blob,thumb;
-  try{blob=await shrink(file);thumb=await toDataUrl(await shrink(blob,160,30000))}catch(e){toast('未能讀取這張相片，請試另一張');return}
+  const hd=settings.photoQuality==='hd';
+  try{blob=hd?await shrink(file,2000,690000):await shrink(file);thumb=await toDataUrl(await shrink(blob,160,30000))}catch(e){toast('未能讀取這張相片，請試另一張');return}
   const url=URL.createObjectURL(blob);
   if(pending?.url)URL.revokeObjectURL(pending.url);
   pending={blob,url,thumb};
@@ -455,7 +459,7 @@ $('saveBtn').onclick=async()=>{
     const ref=editing?doc(db,'expenses',editing.id):doc(collection(db,'expenses'));
     if(pending?.blob){
       await setDoc(doc(db,'photos',ref.id),{data:await toDataUrl(pending.blob),by:me.uid,at:new Date().toISOString()});
-      data.thumb=pending.thumb;data.hasPhoto=true;
+      data.thumb=pending.thumb;data.hasPhoto=true;data.photoBytes=Math.ceil(pending.blob.size*4/3)+30;
     }
     if(editing){data.status=$('fStatus').value;await updateDoc(ref,data)}
     else await setDoc(ref,{items:[],thumb:'',hasPhoto:false,...data,status:'pending',createdBy:me.uid,createdByEmail:me.email||'',createdAt:new Date().toISOString()});
@@ -508,6 +512,8 @@ document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(!$('formSc
 
 // ---------- settings ----------
 $('setBtn').onclick=()=>{
+  $('pqHd').checked=settings.photoQuality==='hd';$('pqStd').checked=!$('pqHd').checked;
+  {const u=usageText();$('usageTxt').textContent=u.text;$('usageBar').style.width=Math.min(100,u.pct).toFixed(1)+'%';$('usageBar').style.background=u.pct>80?'var(--danger)':'var(--accent)';$('lastBk').textContent='上次在這部裝置匯出備份：'+(lsGet('lastBackup')||'未有紀錄')}
   $('rateList').innerHTML=CURS.filter(c=>c[0]!=='HKD').map(c=>`<label for="rt-${c[0]}" class="num">1 ${c[0]} =</label><input id="rt-${c[0]}" class="num" type="number" step="any" min="0" value="${rateOf(c[0])}">`).join('');
   $('acctList').innerHTML=CATS.map(c0=>{const c=cat(c0.id);return `<span><span class="dot" style="background:var(${CAT_COLOR[c.id]})"></span> ${c.zh}</span><input id="ac-${c.id}" class="num" value="${esc(c.code)}" aria-label="${c.zh} 科目編號"><input id="an-${c.id}" value="${esc(c.acct)}" aria-label="${c.zh} 科目名稱">`}).join('');
   $('meEmail').textContent='已登入：'+(me?.email||'');updAiKeyState();$('aiKeyIn').value='';$('newPw').value='';
@@ -518,8 +524,9 @@ $('setScrim').onclick=e=>{if(e.target===$('setScrim'))$('setScrim').hidden=true}
 $('setSave').onclick=async()=>{
   const rates={HKD:1};CURS.forEach(c=>{if(c[0]==='HKD')return;const v=parseFloat($('rt-'+c[0]).value);rates[c[0]]=v>0?v:DEFAULT_RATES[c[0]]});
   const accounts={};CATS.forEach(c=>accounts[c.id]={code:$('ac-'+c.id).value.trim()||c.code,acct:$('an-'+c.id).value.trim()||c.acct});
-  try{await setDoc(doc(db,'settings','main'),{rates,accounts})}catch(e){toast('未能儲存設定：'+errMsg(e));return}
-  settings={rates,accounts};render();$('setScrim').hidden=true;toast('已儲存設定');
+  const photoQuality=$('pqHd').checked?'hd':'standard';
+  try{await setDoc(doc(db,'settings','main'),{rates,accounts,photoQuality})}catch(e){toast('未能儲存設定：'+errMsg(e));return}
+  settings={rates,accounts,photoQuality};render();$('setScrim').hidden=true;toast('已儲存設定');
 };
 function updAiKeyState(){const el=$('aiKeyState');if(el)el.textContent=GEMINI_KEY?'已設定（尾數 …'+GEMINI_KEY.slice(-4)+'）。AI 讀取會使用這條金鑰。':'未設定：會使用 Firebase AI Logic。'}
 $('aiKeyBtn').onclick=async()=>{
@@ -532,16 +539,16 @@ $('pwBtn').onclick=async()=>{const pw=$('newPw').value;if(pw.length<8){toast('�
 $('logoutBtn').onclick=async()=>{await signOut(auth);$('setScrim').hidden=true};
 
 // ---------- export ----------
-function exportXlsx(list,name,period){
-  if(!list.length){toast('沒有收據可以匯出');return}
-  if(!window.XLSX){toast('匯出元件未載入，請檢查網絡');return}
+const safeName=t=>String(t||'').replace(/[\\/:*?"<>|\s]+/g,'_').replace(/_+/g,'_').slice(0,60);
+function buildExport(list,period){
   list=list.slice().sort((a,b)=>(a.date||'').localeCompare(b.date||'')||(a.createdAt||'').localeCompare(b.createdAt||''));
-  const seq={};
+  const seq={},vouchers=[];
   const head=['憑單編號','日期','科目編號','會計科目','摘要','商戶（中文）','商戶（原文）','原幣','原幣金額','匯率（1 原幣 = HKD）','港幣金額 (HKD)','付款方式','標籤','報告','收據相片','報銷狀態','提交者','明細項目'];
-  const detail=list.map(r=>{const c=cat(r.category);const d=(r.date||'').replace(/-/g,'').slice(2);seq[d]=(seq[d]||0)+1;return [
-    'EXP-'+d+'-'+pad(seq[d]),r.date,c.code,c.acct,r.note||((r.merchantZh||r.merchantOrig||'')+' '+c.zh),r.merchantZh,r.merchantOrig,
+  const detail=list.map(r=>{const c=cat(r.category);const d=(r.date||'').replace(/-/g,'').slice(2);seq[d]=(seq[d]||0)+1;const v='EXP-'+d+'-'+pad(seq[d]);vouchers.push({v,r});
+    const photoName=r.hasPhoto?'相片/'+v+'_'+safeName(r.merchantZh||r.merchantOrig||'收據')+'.jpg':'無';
+    return [v,r.date,c.code,c.acct,r.note||((r.merchantZh||r.merchantOrig||'')+' '+c.zh),r.merchantZh,r.merchantOrig,
     r.currency,r.amount,r.rate||rateOf(r.currency),hkdOf(r),r.payMethod,(r.tags||[]).join('、'),repName(r.reportId),
-    r.hasPhoto?'有':'無',r.status==='done'?'已報銷':'待報銷',r.createdByEmail,(r.items||[]).map(it=>it.zh+(it.orig?'（'+it.orig+'）':'')+' ×'+it.qty+' '+it.amount).join('；')]});
+    photoName,r.status==='done'?'已報銷':'待報銷',r.createdByEmail,(r.items||[]).map(it=>it.zh+(it.orig?'（'+it.orig+'）':'')+' ×'+it.qty+' '+it.amount).join('；')]});
   const tHkd=r2(list.reduce((s,r)=>s+hkdOf(r),0));
   detail.push(['合計','','','','','','','','','',tHkd,'','','','','','','']);
   const pend=l=>r2(l.filter(r=>r.status!=='done').reduce((s,r)=>s+hkdOf(r),0));
@@ -551,12 +558,53 @@ function exportXlsx(list,name,period){
   sum.push([],['貨幣','單據數目','原幣金額','港幣金額 (HKD)']);
   [...new Set(list.map(r=>r.currency))].forEach(cu=>{const l=list.filter(r=>r.currency===cu);sum.push([cu,l.length,l.reduce((s,r)=>s+r.amount,0),r2(l.reduce((s,r)=>s+hkdOf(r),0))])});
   const wb=XLSX.utils.book_new();
-  const ws1=XLSX.utils.aoa_to_sheet([head,...detail]);ws1['!cols']=[15,11,9,14,30,20,20,6,12,12,14,10,14,16,8,9,22,50].map(w=>({wch:w}));
+  const ws1=XLSX.utils.aoa_to_sheet([head,...detail]);ws1['!cols']=[15,11,9,14,30,20,20,6,12,12,14,10,14,16,30,9,22,50].map(w=>({wch:w}));
   const ws2=XLSX.utils.aoa_to_sheet(sum);ws2['!cols']=[12,18,12,16,14].map(w=>({wch:w}));
   XLSX.utils.book_append_sheet(wb,ws1,'雜費明細');XLSX.utils.book_append_sheet(wb,ws2,'科目匯總');
-  XLSX.writeFile(wb,name.replace(/[\\/:*?"<>|]/g,'_').slice(0,80)+'.xlsx');
-  toast('已匯出');
+  return {wb,vouchers};
 }
+function exportXlsx(list,name,period){
+  if(!list.length){toast('沒有收據可以匯出');return}
+  if(!window.XLSX){toast('匯出元件未載入，請檢查網絡');return}
+  XLSX.writeFile(buildExport(list,period).wb,safeName(name)+'.xlsx');
+  toast('已匯出 Excel');
+}
+// 備份：Excel ＋ 全部收據相片（檔名對應憑單編號），打包成 ZIP
+let zipping=false;
+async function exportZip(list,name,period,btn){
+  if(!list.length){toast('沒有收據可以匯出');return}
+  if(!window.XLSX||!window.JSZip){toast('匯出元件未載入，請檢查網絡');return}
+  if(zipping)return;zipping=true;
+  const label=btn?.textContent;
+  try{
+    const {wb,vouchers}=buildExport(list,period);
+    const zip=new JSZip();
+    zip.file(safeName(name)+'.xlsx',XLSX.write(wb,{bookType:'xlsx',type:'array'}));
+    const withPhoto=vouchers.filter(x=>x.r.hasPhoto);let done=0,missing=[];
+    for(let i=0;i<withPhoto.length;i+=6){
+      await Promise.all(withPhoto.slice(i,i+6).map(async({v,r})=>{
+        try{const snap=await getDoc(doc(db,'photos',r.id));const d=snap.exists()&&snap.data()?.data;
+          if(d){zip.file('相片/'+v+'_'+safeName(r.merchantZh||r.merchantOrig||'收據')+'.jpg',d.split(',')[1],{base64:true})}else missing.push(v)}
+        catch(e){missing.push(v)}
+        done++;if(btn)btn.textContent='下載相片中… '+done+'/'+withPhoto.length;
+      }));
+    }
+    zip.file('說明.txt','公司雜費備份\r\n報告／期間：'+period+'\r\n匯出日期：'+today()+'\r\n收據數目：'+list.length+'，相片：'+(withPhoto.length-missing.length)+'\r\n相片檔名開頭的編號＝Excel「憑單編號」。\r\n按香港《稅務條例》第 51C 條，業務紀錄須保存最少 7 年。\r\n'+(missing.length?'\r\n以下憑單的相片未能下載：'+missing.join('、')+'\r\n':''));
+    if(btn)btn.textContent='打包中…';
+    const blob=await zip.generateAsync({type:'blob'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=safeName(name)+'_備份.zip';document.body.appendChild(a);a.click();
+    setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove()},4000);
+    lsSet('lastBackup',today());
+    toast(missing.length?'已匯出，但有 '+missing.length+' 張相片未能下載':'已匯出備份 ZIP');
+  }catch(e){console.error(e);toast('匯出失敗：'+errMsg(e))}
+  finally{zipping=false;if(btn)btn.textContent=label}
+}
+
+// ---------- 容量 ----------
+const FREE_BYTES=1024*1024*1024;
+const PHOTO_EST={standard:600000,hd:930000};
+function usageBytes(){return rows.reduce((s,r)=>s+(r.hasPhoto?(r.photoBytes||PHOTO_EST.standard):0)+(r.thumb||'').length+1500,0)}
+function usageText(){const u=usageBytes(),pct=u/FREE_BYTES*100;return {pct,text:'已用約 '+(u/1048576).toFixed(1)+' MB／1024 MB（'+pct.toFixed(1)+'%）· '+rows.filter(r=>r.hasPhoto).length+' 張相片'}}
 
 // ---------- auth + boot ----------
 function showView(v){['setupView','loginView','appView'].forEach(x=>$(x).hidden=x!==v)}

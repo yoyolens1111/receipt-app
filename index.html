@@ -16,7 +16,7 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="styles.css?v=10">
+<link rel="stylesheet" href="styles.css?v=11">
 </head>
 <body>
 <div id="setupView" class="setup" hidden>
@@ -86,6 +86,7 @@
     <div class="note">點按類別、標籤、商戶或貨幣，即可開啟相關收據。</div>
     <button class="linkrow" id="sAll"><span>此範圍內的所有收據</span><small id="sAllN">0 ›</small></button>
     <button class="primary" id="sExport">匯出此範圍會計報表（Excel）</button>
+    <button id="sZip">匯出此範圍備份 ZIP（Excel＋全部相片）</button>
   </section>
 
   <!-- 報告 -->
@@ -153,7 +154,18 @@
     <div class="hint">新收據會用這裏的匯率，每張收據儲存時會鎖定當時匯率，之後改匯率不會影響舊記錄。</div>
     <div class="label" style="margin:0">會計科目</div>
     <div class="acctlist" id="acctList"></div>
+    <div class="label" style="margin:0">相片清晰度</div>
+    <div class="chips" role="radiogroup" aria-label="相片清晰度">
+      <label class="tag" style="padding:6px 12px;cursor:pointer"><input type="radio" name="pq" id="pqStd" checked> 標準（約 0.4MB／張）</label>
+      <label class="tag" style="padding:6px 12px;cursor:pointer"><input type="radio" name="pq" id="pqHd"> 高清・報稅用（約 0.7MB／張）</label>
+    </div>
+    <div class="hint">高清細字更清楚，但免費容量可存的張數會少約四成。只影響之後新增的相片。</div>
     <div class="actions"><button class="primary" id="setSave">儲存設定</button></div>
+    <div class="label" style="margin:0">容量及備份</div>
+    <div style="height:8px;border-radius:4px;background:var(--sunk);overflow:hidden"><i id="usageBar" style="display:block;height:100%;width:0"></i></div>
+    <div class="hint num" id="usageTxt"></div>
+    <div class="hint" id="lastBk"></div>
+    <div class="hint">香港《稅務條例》第 51C 條要求業務紀錄保存最少 7 年。建議每個財年結束時，在「報告」或「統計」匯出備份 ZIP，交會計師並自己另存一份。</div>
     <div class="label" style="margin:0">AI 金鑰（Gemini API key）</div>
     <div class="hint" id="aiKeyState"></div>
     <div class="newrep"><input id="aiKeyIn" type="password" placeholder="貼上 Google AI Studio 的 API key" aria-label="Gemini API key" autocomplete="off"><button id="aiKeyBtn">儲存金鑰</button></div>
@@ -168,7 +180,8 @@
 
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="config.js?v=10"></script>
-<script type="module" src="app.js?v=10"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="config.js?v=11"></script>
+<script type="module" src="app.js?v=11"></script>
 </body>
 </html>
