@@ -481,7 +481,7 @@ $('setSave').onclick=async()=>{
 function updAiKeyState(){const el=$('aiKeyState');if(el)el.textContent=GEMINI_KEY?'已設定（尾數 …'+GEMINI_KEY.slice(-4)+'）。AI 讀取會使用這條金鑰。':'未設定：會使用 Firebase AI Logic。'}
 $('aiKeyBtn').onclick=async()=>{
   const k=$('aiKeyIn').value.trim();
-  if(k&&!/^AIza[0-9A-Za-z_\-]{20,}$/.test(k)){toast('金鑰格式不正確，應該以 AIza 開頭');return}
+  if(k&&(k.length<20||/\s/.test(k))){toast('金鑰好似唔完整，請重新複製整條 key');return}
   try{await setDoc(doc(db,'settings','ai'),{geminiKey:k,updatedBy:me.email||'',updatedAt:new Date().toISOString()});$('aiKeyIn').value='';toast(k?'已儲存 AI 金鑰':'已清除 AI 金鑰')}
   catch(e){toast('未能儲存：'+errMsg(e))}
 };
