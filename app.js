@@ -33,7 +33,7 @@ const fmtCur=(n,c)=>sym(c)+(n||0).toLocaleString('en-US',{maximumFractionDigits:
 const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}};
 const lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
 
-let auth=null,db=null,aiRoot=null,me=null,MODELS=['gemini-2.5-flash'],GEMINI_KEY='';
+let auth=null,db=null,aiRoot=null,me=null,MODELS=['gemini-2.5-flash'],GEMINI_KEY='',CFG_KEY='';
 const modelCache={};
 const modelFor=m=>modelCache[m]||(modelCache[m]=getGenerativeModel(aiRoot,{model:m,generationConfig:{responseMimeType:'application/json',temperature:0.1}}));
 const aiStatus=e=>e?.customErrorData?.status||(/\[(\d{3})/.exec(String(e?.message||''))||[])[1]*1||0;
@@ -58,6 +58,8 @@ function subscribe(){
   const fail=e=>{console.error(e);clearTimeout(timer);$('rcList').innerHTML='<div class="empty"><strong>未能載入記錄</strong><span>'+(e?.code==='permission-denied'?'你沒有權限，請確認已登入公司帳戶，以及 Firestore 規則已設定。':'請檢查網絡後重新開啟。')+'</span></div>'};
   unsubs.push(onSnapshot(collection(db,'expenses'),snap=>{clearTimeout(timer);loaded=true;rows=snap.docs.map(d=>({id:d.id,tags:[],items:[],...d.data()})).filter(r=>r.date);render()},fail));
   unsubs.push(onSnapshot(collection(db,'reports'),snap=>{reports=snap.docs.map(d=>({id:d.id,...d.data()}));render()},()=>{}));
+  // AI 金鑰存於 Firestore（只有已登入的成員可讀），不會出現在公開的程式碼
+  unsubs.push(onSnapshot(doc(db,'settings','ai'),s=>{const k=s.exists()&&s.data()?.geminiKey;GEMINI_KEY=(k||CFG_KEY||'').trim();updAiKeyState()},()=>{}));
   unsubs.push(onSnapshot(doc(db,'settings','main'),s=>{const d=s.exists()&&s.data();if(d){settings={rates:{...DEFAULT_RATES,...(d.rates||{})},accounts:d.accounts||{}};render()}},()=>{}));
 }
 const errMsg=e=>e?.code==='permission-denied'?'你沒有權限':e?.code==='unavailable'?'網絡中斷，恢復後會自動同步':(e?.message||'請再試');
@@ -465,7 +467,7 @@ document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(!$('formSc
 $('setBtn').onclick=()=>{
   $('rateList').innerHTML=CURS.filter(c=>c[0]!=='HKD').map(c=>`<label for="rt-${c[0]}" class="num">1 ${c[0]} =</label><input id="rt-${c[0]}" class="num" type="number" step="any" min="0" value="${rateOf(c[0])}">`).join('');
   $('acctList').innerHTML=CATS.map(c0=>{const c=cat(c0.id);return `<span><span class="dot" style="background:var(${CAT_COLOR[c.id]})"></span> ${c.zh}</span><input id="ac-${c.id}" class="num" value="${esc(c.code)}" aria-label="${c.zh} 科目編號"><input id="an-${c.id}" value="${esc(c.acct)}" aria-label="${c.zh} 科目名稱">`}).join('');
-  $('meEmail').textContent='已登入：'+(me?.email||'');$('newPw').value='';
+  $('meEmail').textContent='已登入：'+(me?.email||'');updAiKeyState();$('aiKeyIn').value='';$('newPw').value='';
   $('setScrim').hidden=false;
 };
 $('setClose').onclick=()=>$('setScrim').hidden=true;
@@ -475,6 +477,13 @@ $('setSave').onclick=async()=>{
   const accounts={};CATS.forEach(c=>accounts[c.id]={code:$('ac-'+c.id).value.trim()||c.code,acct:$('an-'+c.id).value.trim()||c.acct});
   try{await setDoc(doc(db,'settings','main'),{rates,accounts})}catch(e){toast('未能儲存設定：'+errMsg(e));return}
   settings={rates,accounts};render();$('setScrim').hidden=true;toast('已儲存設定');
+};
+function updAiKeyState(){const el=$('aiKeyState');if(el)el.textContent=GEMINI_KEY?'已設定（尾數 …'+GEMINI_KEY.slice(-4)+'）。AI 讀取會使用這條金鑰。':'未設定：會使用 Firebase AI Logic。'}
+$('aiKeyBtn').onclick=async()=>{
+  const k=$('aiKeyIn').value.trim();
+  if(k&&!/^AIza[0-9A-Za-z_\-]{20,}$/.test(k)){toast('金鑰格式不正確，應該以 AIza 開頭');return}
+  try{await setDoc(doc(db,'settings','ai'),{geminiKey:k,updatedBy:me.email||'',updatedAt:new Date().toISOString()});$('aiKeyIn').value='';toast(k?'已儲存 AI 金鑰':'已清除 AI 金鑰')}
+  catch(e){toast('未能儲存：'+errMsg(e))}
 };
 $('pwBtn').onclick=async()=>{const pw=$('newPw').value;if(pw.length<8){toast('密碼最少 8 個字');return}try{await updatePassword(auth.currentUser,pw);$('newPw').value='';toast('已更改密碼')}catch(e){toast(e?.code==='auth/requires-recent-login'?'為安全起見，請先登出再登入，然後再改密碼':'更改失敗：'+(e?.message||''))}};
 $('logoutBtn').onclick=async()=>{await signOut(auth);$('setScrim').hidden=true};
@@ -528,7 +537,7 @@ $('loginForm').onsubmit=async e=>{
     auth=getAuth(app);
     try{db=initializeFirestore(app,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})})}catch(e){db=initializeFirestore(app,{})}
     try{aiRoot=getAI(app,{backend:new GoogleAIBackend()})}catch(e){console.warn('AI unavailable',e)}
-    GEMINI_KEY=(cfg.GEMINI_API_KEY||'').trim();
+    CFG_KEY=GEMINI_KEY=(cfg.GEMINI_API_KEY||'').trim();
     MODELS=[...new Set([cfg.GEMINI_MODEL||'gemini-2.5-flash','gemini-flash-latest','gemini-2.5-flash-lite'])];
     onAuthStateChanged(auth,u=>{if(u)startApp(u);else{me=null;unsubs.forEach(f=>f());unsubs=[];rows=[];loaded=false;showView('loginView')}});
   }
