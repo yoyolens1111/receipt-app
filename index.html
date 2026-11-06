@@ -16,7 +16,7 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="styles.css?v=11">
+<link rel="stylesheet" href="styles.css?v=12">
 </head>
 <body>
 <div id="setupView" class="setup" hidden>
@@ -112,7 +112,8 @@
       <img id="prevImg" alt="收據預覽">
       <div style="display:flex;flex-direction:column;gap:8px;min-width:0">
         <div class="ai" id="aiBox"></div>
-        <button class="ghost" id="rePhoto" style="align-self:flex-start;padding:4px 0">更換相片</button>
+        <span class="hint" id="photoInfo"></span>
+        <div class="chips"><button class="ghost" id="rePhoto" style="padding:4px 0">更換相片</button><button class="ghost" id="origBtn" style="padding:4px 0" hidden>用原相片</button></div>
       </div>
     </div>
     <div class="form">
@@ -154,10 +155,12 @@
     <div class="hint">新收據會用這裏的匯率，每張收據儲存時會鎖定當時匯率，之後改匯率不會影響舊記錄。</div>
     <div class="label" style="margin:0">會計科目</div>
     <div class="acctlist" id="acctList"></div>
+    <div class="label" style="margin:0">相片處理</div>
+    <label class="tag" style="padding:6px 12px;cursor:pointer;align-self:flex-start"><input type="checkbox" id="pqScan" checked> 掃描效果：自動裁切收據、去陰影、白底黑字（更清楚、檔案更細）</label>
     <div class="label" style="margin:0">相片清晰度</div>
     <div class="chips" role="radiogroup" aria-label="相片清晰度">
-      <label class="tag" style="padding:6px 12px;cursor:pointer"><input type="radio" name="pq" id="pqStd" checked> 標準（約 0.4MB／張）</label>
-      <label class="tag" style="padding:6px 12px;cursor:pointer"><input type="radio" name="pq" id="pqHd"> 高清・報稅用（約 0.7MB／張）</label>
+      <label class="tag" style="padding:6px 12px;cursor:pointer"><input type="radio" name="pq" id="pqStd" checked> 標準（約 0.2–0.4MB／張）</label>
+      <label class="tag" style="padding:6px 12px;cursor:pointer"><input type="radio" name="pq" id="pqHd"> 高清・報稅用（約 0.4–0.7MB／張）</label>
     </div>
     <div class="hint">高清細字更清楚，但免費容量可存的張數會少約四成。只影響之後新增的相片。</div>
     <div class="actions"><button class="primary" id="setSave">儲存設定</button></div>
@@ -181,7 +184,7 @@
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="config.js?v=11"></script>
-<script type="module" src="app.js?v=11"></script>
+<script src="config.js?v=12"></script>
+<script type="module" src="app.js?v=12"></script>
 </body>
 </html>

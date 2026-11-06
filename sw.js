@@ -1,6 +1,6 @@
 // 離線外殼：App 本身的檔案會快取，資料仍需網絡。
-const CACHE = 'receipts-v11';
-const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png'];
+const CACHE = 'receipts-v12';
+const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'scan.js', 'config.js', 'manifest.webmanifest', 'icons/icon-192.png'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL))); self.skipWaiting(); });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))));

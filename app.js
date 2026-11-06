@@ -7,6 +7,7 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.6.0/firebas
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js';
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, addDoc, setDoc, updateDoc, deleteDoc, getDoc, writeBatch } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js';
 import { getAI, getGenerativeModel, GoogleAIBackend } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-ai.js';
+import { docScan } from './scan.js?v=12';
 
 const CATS=[
   {id:'food',zh:'餐飲食物',code:'6110',acct:'膳食及招待費'},
@@ -38,7 +39,7 @@ const modelCache={};
 const modelFor=m=>modelCache[m]||(modelCache[m]=getGenerativeModel(aiRoot,{model:m,generationConfig:{responseMimeType:'application/json',temperature:0.1}}));
 const aiStatus=e=>e?.customErrorData?.status||(/\[(\d{3})/.exec(String(e?.message||''))||[])[1]*1||0;
 let rows=[],reports=[],loaded=false,unsubs=[];
-let settings={rates:{...DEFAULT_RATES},accounts:{},photoQuality:'standard'};
+let settings={rates:{...DEFAULT_RATES},accounts:{},photoQuality:'standard',scan:true};
 let tab='receipts',statusF='all',q='',filter=null,openReport=null,newRepOpen=false;
 let sRange=null,sDim='cat';
 let editing=null,pending=null,formTags=[];
@@ -60,7 +61,7 @@ function subscribe(){
   unsubs.push(onSnapshot(collection(db,'reports'),snap=>{reports=snap.docs.map(d=>({id:d.id,...d.data()}));render()},()=>{}));
   // AI 金鑰存於 Firestore（只有已登入的成員可讀），不會出現在公開的程式碼
   unsubs.push(onSnapshot(doc(db,'settings','ai'),s=>{const k=s.exists()&&s.data()?.geminiKey;GEMINI_KEY=(k||CFG_KEY||'').trim();updAiKeyState()},()=>{}));
-  unsubs.push(onSnapshot(doc(db,'settings','main'),s=>{const d=s.exists()&&s.data();if(d){settings={rates:{...DEFAULT_RATES,...(d.rates||{})},accounts:d.accounts||{},photoQuality:d.photoQuality||'standard'};render()}},()=>{}));
+  unsubs.push(onSnapshot(doc(db,'settings','main'),s=>{const d=s.exists()&&s.data();if(d){settings={rates:{...DEFAULT_RATES,...(d.rates||{})},accounts:d.accounts||{},photoQuality:d.photoQuality||'standard',scan:d.scan!==false};render()}},()=>{}));
 }
 const errMsg=e=>e?.code==='permission-denied'?'你沒有權限':e?.code==='unavailable'?'網絡中斷，恢復後會自動同步':(e?.message||'請再試');
 
@@ -277,7 +278,7 @@ $('fTags').onclick=e=>{const b=e.target.closest('button');if(!b)return;const t=b
 function repOptions(sel){$('fRep').innerHTML='<option value="">（未歸入報告）</option>'+reports.slice().sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||'')).map(r=>`<option value="${esc(r.id)}" ${r.id===sel?'selected':''}>${esc(r.name)}</option>`).join('')}
 
 function openForm(r){
-  editing=r||null;pending=null;$('file').value='';
+  editing=r||null;pending=null;$('file').value='';$('origBtn').hidden=true;$('photoInfo').textContent='';
   $('formTitle').textContent=r?'編輯收據':'新增收據';
   $('fItems').hidden=true;$('fStatusWrap').hidden=!r;
   if(r){
@@ -304,6 +305,11 @@ function closeForm(){$('formScrim').hidden=true;if(pending?.url)URL.revokeObject
 $('addBtn').onclick=()=>openForm(null);$('formClose').onclick=closeForm;$('formCancel').onclick=closeForm;
 $('formScrim').onclick=e=>{if(e.target===$('formScrim'))closeForm()};
 $('rePhoto').onclick=()=>$('file').click();
+$('origBtn').onclick=async()=>{
+  if(!pending?.orig)return;
+  const toScan=!pending.scanned,items=pending.items;
+  try{const r=await makePhoto(pending.orig,toScan);await setPhoto(r.blob,pending.orig,r.scanned,r.cropped);if(items)pending.items=items}catch(e){toast('未能處理相片')}
+};
 
 const drop=$('drop');
 drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('over')});
@@ -347,16 +353,31 @@ async function geminiDirect(m,b64){
   if(!r.ok){const e=new Error(j?.error?.message||('HTTP '+r.status));e.customErrorData={status:r.status};e.code=j?.error?.status;throw e}
   return (j.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join('');
 }
-async function handleFile(file){
-  if(!file.type.startsWith('image/')){toast('請選擇相片檔案');return}
-  let blob,thumb;
+// 相片處理：掃描效果（裁切＋去陰影＋灰階）或原相壓縮
+async function makePhoto(file,useScan){
   const hd=settings.photoQuality==='hd';
-  try{blob=hd?await shrink(file,2000,690000):await shrink(file);thumb=await toDataUrl(await shrink(blob,160,30000))}catch(e){toast('未能讀取這張相片，請試另一張');return}
+  if(useScan){try{return {...await docScan(file,{maxSide:hd?2400:2000,maxBytes:hd?690000:450000}),scanned:true}}catch(e){console.warn('scan failed',e)}}
+  return {blob:hd?await shrink(file,2000,690000):await shrink(file),cropped:false,scanned:false};
+}
+async function setPhoto(blob,orig,scanned,cropped){
+  const thumb=await toDataUrl(await shrink(blob,160,30000));
   const url=URL.createObjectURL(blob);
   if(pending?.url)URL.revokeObjectURL(pending.url);
-  pending={blob,url,thumb};
-  $('prevImg').src=url;$('preview').hidden=false;$('drop').hidden=true;
-  readAi(blob);
+  pending={...(pending||{}),blob,url,thumb,orig,scanned};
+  $('prevImg').src=url;
+  $('origBtn').hidden=false;
+  $('origBtn').textContent=scanned?'用原相片（唔要掃描效果）':'用掃描效果';
+  $('photoInfo').textContent=(scanned?(cropped?'已自動裁切及加強':'已加強（未能自動裁切）'):'原相片')+' · '+Math.round(blob.size/1024)+' KB';
+}
+async function handleFile(file){
+  if(!file.type.startsWith('image/')){toast('請選擇相片檔案');return}
+  const useScan=settings.scan!==false;
+  $('prevImg').removeAttribute('src');$('preview').hidden=false;$('drop').hidden=true;
+  $('aiBox').className='ai';$('aiBox').innerHTML='<strong>處理相片中…</strong>';
+  let r;
+  try{r=await makePhoto(file,useScan)}catch(e){console.warn(e);toast('未能讀取這張相片，請試另一張');$('preview').hidden=true;$('drop').hidden=false;return}
+  await setPhoto(r.blob,file,r.scanned,r.cropped);
+  readAi(r.blob);
 }
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 // 繁忙（503/500/429）時：同一型號等一陣再試，再唔得就換下一個型號
@@ -513,6 +534,7 @@ document.addEventListener('keydown',e=>{if(e.key!=='Escape')return;if(!$('formSc
 
 // ---------- settings ----------
 $('setBtn').onclick=()=>{
+  $('pqScan').checked=settings.scan!==false;
   $('pqHd').checked=settings.photoQuality==='hd';$('pqStd').checked=!$('pqHd').checked;
   {const u=usageText();$('usageTxt').textContent=u.text;$('usageBar').style.width=Math.min(100,u.pct).toFixed(1)+'%';$('usageBar').style.background=u.pct>80?'var(--danger)':'var(--accent)';$('lastBk').textContent='上次在這部裝置匯出備份：'+(lsGet('lastBackup')||'未有紀錄')}
   $('rateList').innerHTML=CURS.filter(c=>c[0]!=='HKD').map(c=>`<label for="rt-${c[0]}" class="num">1 ${c[0]} =</label><input id="rt-${c[0]}" class="num" type="number" step="any" min="0" value="${rateOf(c[0])}">`).join('');
@@ -525,9 +547,9 @@ $('setScrim').onclick=e=>{if(e.target===$('setScrim'))$('setScrim').hidden=true}
 $('setSave').onclick=async()=>{
   const rates={HKD:1};CURS.forEach(c=>{if(c[0]==='HKD')return;const v=parseFloat($('rt-'+c[0]).value);rates[c[0]]=v>0?v:DEFAULT_RATES[c[0]]});
   const accounts={};CATS.forEach(c=>accounts[c.id]={code:$('ac-'+c.id).value.trim()||c.code,acct:$('an-'+c.id).value.trim()||c.acct});
-  const photoQuality=$('pqHd').checked?'hd':'standard';
-  try{await setDoc(doc(db,'settings','main'),{rates,accounts,photoQuality})}catch(e){toast('未能儲存設定：'+errMsg(e));return}
-  settings={rates,accounts,photoQuality};render();$('setScrim').hidden=true;toast('已儲存設定');
+  const photoQuality=$('pqHd').checked?'hd':'standard',scan=$('pqScan').checked;
+  try{await setDoc(doc(db,'settings','main'),{rates,accounts,photoQuality,scan})}catch(e){toast('未能儲存設定：'+errMsg(e));return}
+  settings={rates,accounts,photoQuality,scan};render();$('setScrim').hidden=true;toast('已儲存設定');
 };
 function updAiKeyState(){const el=$('aiKeyState');if(el)el.textContent=GEMINI_KEY?'已設定（尾數 …'+GEMINI_KEY.slice(-4)+'）。AI 讀取會使用這條金鑰。':'未設定：會使用 Firebase AI Logic。'}
 $('aiKeyBtn').onclick=async()=>{
