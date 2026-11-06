@@ -6,8 +6,8 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-app.js';
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js';
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, addDoc, setDoc, updateDoc, deleteDoc, getDoc, writeBatch } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js';
-import { getAI, getGenerativeModel, GoogleAIBackend } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-ai.js';
-import { docScan } from './scan.js?v=12';
+import { getAI, getGenerativeModel, GoogleAIBackend, VertexAIBackend } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-ai.js';
+import { docScan } from './scan.js?v=13';
 
 const CATS=[
   {id:'food',zh:'餐飲食物',code:'6110',acct:'膳食及招待費'},
@@ -36,7 +36,11 @@ const lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
 
 let auth=null,db=null,aiRoot=null,me=null,MODELS=['gemini-2.5-flash'],GEMINI_KEY='',CFG_KEY='';
 const modelCache={};
-const modelFor=m=>modelCache[m]||(modelCache[m]=getGenerativeModel(aiRoot,{model:m,generationConfig:{responseMimeType:'application/json',temperature:0.1}}));
+let fbApp=null,AI_SOURCE='vertex';
+// AI 來源：'vertex' = Firebase Vertex AI（香港可用，需 Blaze 方案）；'key' = Google AI Studio 金鑰（香港不支援）
+const aiRootFor=src=>{try{return getAI(fbApp,{backend:src==='vertex'?new VertexAIBackend():new GoogleAIBackend()})}catch(e){console.warn('AI unavailable',e);return null}};
+const modelFor=m=>{const k=AI_SOURCE+'|'+m;if(!modelCache[k]){const root=aiRootFor(AI_SOURCE);if(!root)throw new Error('AI not configured');modelCache[k]=getGenerativeModel(root,{model:m,generationConfig:{responseMimeType:'application/json',temperature:0.1}})}return modelCache[k]};
+const useKey=()=>AI_SOURCE==='key'&&!!GEMINI_KEY;
 const aiStatus=e=>e?.customErrorData?.status||(/\[(\d{3})/.exec(String(e?.message||''))||[])[1]*1||0;
 let rows=[],reports=[],loaded=false,unsubs=[];
 let settings={rates:{...DEFAULT_RATES},accounts:{},photoQuality:'standard',scan:true};
@@ -60,7 +64,7 @@ function subscribe(){
   unsubs.push(onSnapshot(collection(db,'expenses'),snap=>{clearTimeout(timer);loaded=true;rows=snap.docs.map(d=>({id:d.id,tags:[],items:[],...d.data()})).filter(r=>r.date);render()},fail));
   unsubs.push(onSnapshot(collection(db,'reports'),snap=>{reports=snap.docs.map(d=>({id:d.id,...d.data()}));render()},()=>{}));
   // AI 金鑰存於 Firestore（只有已登入的成員可讀），不會出現在公開的程式碼
-  unsubs.push(onSnapshot(doc(db,'settings','ai'),s=>{const k=s.exists()&&s.data()?.geminiKey;GEMINI_KEY=(k||CFG_KEY||'').trim();updAiKeyState()},()=>{}));
+  unsubs.push(onSnapshot(doc(db,'settings','ai'),s=>{const d=s.exists()?s.data():{};GEMINI_KEY=(d.geminiKey||CFG_KEY||'').trim();AI_SOURCE=d.source==='key'?'key':'vertex';updAiKeyState()},()=>{}));
   unsubs.push(onSnapshot(doc(db,'settings','main'),s=>{const d=s.exists()&&s.data();if(d){settings={rates:{...DEFAULT_RATES,...(d.rates||{})},accounts:d.accounts||{},photoQuality:d.photoQuality||'standard',scan:d.scan!==false};render()}},()=>{}));
 }
 const errMsg=e=>e?.code==='permission-denied'?'你沒有權限':e?.code==='unavailable'?'網絡中斷，恢復後會自動同步':(e?.message||'請再試');
@@ -384,7 +388,7 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 // 用金鑰查詢 Google 現時提供的 Gemini 型號，優先用較新、穩定的 flash 型號
 let discovered=null;
 async function discoverModels(){
-  if(!GEMINI_KEY)return MODELS;
+  if(!useKey())return MODELS;
   if(discovered&&discovered.key===GEMINI_KEY)return discovered.list;
   let list=[];
   try{
@@ -406,7 +410,7 @@ async function callAi(b64,onStatus){
   for(const m of models){
     onStatus?.('正在讀取及翻譯…（'+m+'）');
     for(let attempt=0;attempt<2;attempt++){
-      try{return GEMINI_KEY?await geminiDirect(m,b64):(await modelFor(m).generateContent([PROMPT,{inlineData:{data:b64,mimeType:'image/jpeg'}}])).response.text()}
+      try{return useKey()?await geminiDirect(m,b64):(await modelFor(m).generateContent([PROMPT,{inlineData:{data:b64,mimeType:'image/jpeg'}}])).response.text()}
       catch(err){
         lastErr=err;const st=aiStatus(err);
         if(st===404)break;                       // 型號不存在：直接試下一個
@@ -431,7 +435,8 @@ async function readAi(blob){
     console.warn(e);
     const st=aiStatus(e),msg=String(e?.message||e||'');
     box.className='ai err';
-    const title=/location is not supported/i.test(msg)?'Google 免費 Gemini API 不支援香港地區'
+    const title=/location is not supported/i.test(msg)?'Google 免費 Gemini API 不支援香港地區，請到設定把「AI 來源」改為 Firebase Vertex AI'
+      :AI_SOURCE==='vertex'&&(/billing|blaze|pay-as-you-go|Vertex AI API|aiplatform|SERVICE_DISABLED|has not been used/i.test(msg)||st===403)?'Firebase Vertex AI 未啟用：需要升級 Blaze 方案並啟用 API'
       :st===504?'AI 回應太慢（Google 伺服器繁忙）'
       :[500,502,503].includes(st)||/high demand|overloaded|UNAVAILABLE/i.test(msg)?'AI 伺服器而家太繁忙'
       :st===429||/RESOURCE_EXHAUSTED/.test(msg)?'AI 暫時太多人用，或今日免費次數已用完'
@@ -551,11 +556,20 @@ $('setSave').onclick=async()=>{
   try{await setDoc(doc(db,'settings','main'),{rates,accounts,photoQuality,scan})}catch(e){toast('未能儲存設定：'+errMsg(e));return}
   settings={rates,accounts,photoQuality,scan};render();$('setScrim').hidden=true;toast('已儲存設定');
 };
-function updAiKeyState(){const el=$('aiKeyState');if(el)el.textContent=GEMINI_KEY?'已設定（尾數 …'+GEMINI_KEY.slice(-4)+'）。AI 讀取會使用這條金鑰。':'未設定：會使用 Firebase AI Logic。'}
+function updAiKeyState(){
+  const el=$('aiKeyState');if(el)el.textContent=GEMINI_KEY?'AI Studio 金鑰：已設定（尾數 …'+GEMINI_KEY.slice(-4)+'）':'AI Studio 金鑰：未設定';
+  if($('aiSrcVertex')){$('aiSrcVertex').checked=AI_SOURCE==='vertex';$('aiSrcKey').checked=AI_SOURCE==='key'}
+}
+async function saveAiSource(src){
+  try{await setDoc(doc(db,'settings','ai'),{source:src,updatedBy:me.email||'',updatedAt:new Date().toISOString()},{merge:true});toast(src==='vertex'?'AI 來源：Firebase Vertex AI':'AI 來源：AI Studio 金鑰')}
+  catch(e){toast('未能儲存：'+errMsg(e));updAiKeyState()}
+}
+$('aiSrcVertex').onchange=()=>saveAiSource('vertex');
+$('aiSrcKey').onchange=()=>saveAiSource('key');
 $('aiKeyBtn').onclick=async()=>{
   const k=$('aiKeyIn').value.trim();
   if(k&&(k.length<20||/\s/.test(k))){toast('金鑰好似唔完整，請重新複製整條 key');return}
-  try{await setDoc(doc(db,'settings','ai'),{geminiKey:k,updatedBy:me.email||'',updatedAt:new Date().toISOString()});$('aiKeyIn').value='';toast(k?'已儲存 AI 金鑰':'已清除 AI 金鑰')}
+  try{await setDoc(doc(db,'settings','ai'),{geminiKey:k,updatedBy:me.email||'',updatedAt:new Date().toISOString()},{merge:true});$('aiKeyIn').value='';toast(k?'已儲存 AI 金鑰':'已清除 AI 金鑰')}
   catch(e){toast('未能儲存：'+errMsg(e))}
 };
 $('pwBtn').onclick=async()=>{const pw=$('newPw').value;if(pw.length<8){toast('密碼最少 8 個字');return}try{await updatePassword(auth.currentUser,pw);$('newPw').value='';toast('已更改密碼')}catch(e){toast(e?.code==='auth/requires-recent-login'?'為安全起見，請先登出再登入，然後再改密碼':'更改失敗：'+(e?.message||''))}};
@@ -650,7 +664,7 @@ $('loginForm').onsubmit=async e=>{
     const app=initializeApp(cfg.firebase);
     auth=getAuth(app);
     try{db=initializeFirestore(app,{localCache:persistentLocalCache({tabManager:persistentMultipleTabManager()})})}catch(e){db=initializeFirestore(app,{})}
-    try{aiRoot=getAI(app,{backend:new GoogleAIBackend()})}catch(e){console.warn('AI unavailable',e)}
+    fbApp=app;
     CFG_KEY=GEMINI_KEY=(cfg.GEMINI_API_KEY||'').trim();
     MODELS=[...new Set([cfg.GEMINI_MODEL||'gemini-2.5-flash','gemini-2.5-flash-lite','gemini-flash-latest'])];
     onAuthStateChanged(auth,u=>{if(u)startApp(u);else{me=null;unsubs.forEach(f=>f());unsubs=[];rows=[];loaded=false;showView('loginView')}});

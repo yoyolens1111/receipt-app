@@ -16,7 +16,7 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="styles.css?v=12">
+<link rel="stylesheet" href="styles.css?v=13">
 </head>
 <body>
 <div id="setupView" class="setup" hidden>
@@ -169,7 +169,11 @@
     <div class="hint num" id="usageTxt"></div>
     <div class="hint" id="lastBk"></div>
     <div class="hint">香港《稅務條例》第 51C 條要求業務紀錄保存最少 7 年。建議每個財年結束時，在「報告」或「統計」匯出備份 ZIP，交會計師並自己另存一份。</div>
-    <div class="label" style="margin:0">AI 金鑰（Gemini API key）</div>
+    <div class="label" style="margin:0">AI 來源</div>
+    <div style="display:flex;flex-direction:column;gap:6px" role="radiogroup" aria-label="AI 來源">
+      <label class="tag" style="padding:6px 12px;cursor:pointer;align-self:flex-start"><input type="radio" name="aiSrc" id="aiSrcVertex" checked> Firebase Vertex AI（香港可用，需要 Blaze 方案）</label>
+      <label class="tag" style="padding:6px 12px;cursor:pointer;align-self:flex-start"><input type="radio" name="aiSrc" id="aiSrcKey"> Google AI Studio 金鑰（免費，但香港不支援）</label>
+    </div>
     <div class="hint" id="aiKeyState"></div>
     <div class="newrep"><input id="aiKeyIn" type="password" placeholder="貼上 Google AI Studio 的 API key" aria-label="Gemini API key" autocomplete="off"><button id="aiKeyBtn">儲存金鑰</button></div>
     <div class="label" style="margin:0">我的帳戶</div>
@@ -184,7 +188,7 @@
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="config.js?v=12"></script>
-<script type="module" src="app.js?v=12"></script>
+<script src="config.js?v=13"></script>
+<script type="module" src="app.js?v=13"></script>
 </body>
 </html>
