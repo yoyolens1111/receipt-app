@@ -1,0 +1,26 @@
+# 發佈到 Firebase Hosting（https://receipt-app-172f6.web.app）
+# 只在 GitHub 已設定 Secret「FIREBASE_SERVICE_ACCOUNT」時才會真正發佈；未設定時自動略過，不會出錯。
+name: 發佈到 Firebase
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+    steps:
+      - if: env.HAS_KEY != 'true'
+        run: echo "未設定 FIREBASE_SERVICE_ACCOUNT，略過 Firebase 發佈。"
+      - if: env.HAS_KEY == 'true'
+        uses: actions/checkout@v4
+      - if: env.HAS_KEY == 'true'
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          projectId: receipt-app-172f6
+          channelId: live
