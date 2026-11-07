@@ -7,7 +7,7 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.6.0/firebas
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js';
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, addDoc, setDoc, updateDoc, deleteDoc, getDoc, writeBatch } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js';
 import { getAI, getGenerativeModel, GoogleAIBackend, VertexAIBackend } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-ai.js';
-import { docScan } from './scan.js?v=15';
+import { docScan, detectBox } from './scan.js?v=16';
 
 const CATS=[
   {id:'food',zh:'餐飲食物',code:'6110',acct:'膳食及招待費'},
@@ -284,7 +284,7 @@ $('fTags').onclick=e=>{const b=e.target.closest('button');if(!b)return;const t=b
 function repOptions(sel){$('fRep').innerHTML='<option value="">（未歸入報告）</option>'+reports.slice().sort((a,b)=>(b.createdAt||'').localeCompare(a.createdAt||'')).map(r=>`<option value="${esc(r.id)}" ${r.id===sel?'selected':''}>${esc(r.name)}</option>`).join('')}
 
 function openForm(r){
-  editing=r||null;pending=null;$('file').value='';$('origBtn').hidden=true;$('photoInfo').textContent='';
+  editing=r||null;pending=null;$('file').value='';$('origBtn').hidden=true;$('cropBtn').hidden=true;$('photoInfo').textContent='';
   $('formTitle').textContent=r?'編輯收據':'新增收據';
   $('fItems').hidden=true;$('fStatusWrap').hidden=!r;
   if(r){
@@ -311,10 +311,52 @@ function closeForm(){$('formScrim').hidden=true;if(pending?.url)URL.revokeObject
 $('addBtn').onclick=()=>openForm(null);$('formClose').onclick=closeForm;$('formCancel').onclick=closeForm;
 $('formScrim').onclick=e=>{if(e.target===$('formScrim'))closeForm()};
 $('rePhoto').onclick=()=>$('file').click();
+// ---------- 手動裁切 ----------
+let cropState=null;
+$('cropBtn').onclick=async()=>{
+  if(!pending?.orig)return;
+  const url=URL.createObjectURL(pending.orig);
+  let box=pending.crop;
+  if(!box){try{box=await detectBox(pending.orig)}catch(e){}}
+  if(!box)box={x0:0.05,y0:0.05,x1:0.95,y1:0.95};
+  cropState={url,box:{...box}};
+  $('cropImg').src=url;$('cropScrim').hidden=false;
+  $('cropImg').onload=drawCrop;if($('cropImg').complete)drawCrop();
+};
+function drawCrop(){
+  const b=cropState.box,r=$('cropRect').style;
+  r.left=b.x0*100+'%';r.top=b.y0*100+'%';r.width=(b.x1-b.x0)*100+'%';r.height=(b.y1-b.y0)*100+'%';
+}
+(()=>{
+  const stage=$('cropStage');let drag=null;
+  stage.addEventListener('pointerdown',e=>{
+    if(!cropState)return;const h=e.target.dataset.h||(e.target.id==='cropRect'?'move':null);if(!h)return;
+    e.preventDefault();stage.setPointerCapture(e.pointerId);
+    const rc=$('cropImg').getBoundingClientRect();drag={h,sx:e.clientX,sy:e.clientY,w:rc.width,ht:rc.height,b0:{...cropState.box}};
+  });
+  stage.addEventListener('pointermove',e=>{
+    if(!drag)return;const dx=(e.clientX-drag.sx)/drag.w,dy=(e.clientY-drag.sy)/drag.ht,b={...drag.b0},m=0.05,cl=v=>Math.max(0,Math.min(1,v));
+    if(drag.h==='move'){const w=b.x1-b.x0,h=b.y1-b.y0;b.x0=cl(Math.min(1-w,b.x0+dx));b.y0=cl(Math.min(1-h,b.y0+dy));b.x1=b.x0+w;b.y1=b.y0+h}
+    else{if(drag.h.includes('l'))b.x0=cl(Math.min(b.x1-m,b.x0+dx));if(drag.h.includes('r'))b.x1=cl(Math.max(b.x0+m,b.x1+dx));
+      if(drag.h.includes('t'))b.y0=cl(Math.min(b.y1-m,b.y0+dy));if(drag.h.includes('b'))b.y1=cl(Math.max(b.y0+m,b.y1+dy))}
+    cropState.box=b;drawCrop();
+  });
+  const end=()=>{drag=null};stage.addEventListener('pointerup',end);stage.addEventListener('pointercancel',end);
+})();
+function closeCrop(){$('cropScrim').hidden=true;if(cropState)URL.revokeObjectURL(cropState.url);cropState=null}
+$('cropCancel').onclick=closeCrop;
+$('cropFull').onclick=()=>{if(cropState){cropState.box={x0:0,y0:0,x1:1,y1:1};drawCrop()}};
+$('cropOk').onclick=async()=>{
+  if(!cropState||!pending?.orig)return closeCrop();
+  const b=cropState.box,full=b.x0<=0.001&&b.y0<=0.001&&b.x1>=0.999&&b.y1>=0.999,crop=full?null:b,items=pending.items,scan=pending.scanned;
+  closeCrop();
+  try{const r=await makePhoto(pending.orig,scan,crop);await setPhoto(r.blob,pending.orig,r.scanned,r.cropped,crop);if(items)pending.items=items;toast(crop?'已裁切':'已還原成整張相')}
+  catch(e){toast('未能裁切相片')}
+};
 $('origBtn').onclick=async()=>{
   if(!pending?.orig)return;
   const toScan=!pending.scanned,items=pending.items;
-  try{const r=await makePhoto(pending.orig,toScan);await setPhoto(r.blob,pending.orig,r.scanned,r.cropped);if(items)pending.items=items}catch(e){toast('未能處理相片')}
+  try{const crop=pending.crop;const r=await makePhoto(pending.orig,toScan,crop);await setPhoto(r.blob,pending.orig,r.scanned,r.cropped,crop);if(items)pending.items=items}catch(e){toast('未能處理相片')}
 };
 
 const drop=$('drop');
@@ -360,20 +402,21 @@ async function geminiDirect(m,b64){
   return (j.candidates?.[0]?.content?.parts||[]).map(p=>p.text||'').join('');
 }
 // 相片處理：掃描效果（裁切＋去陰影＋灰階）或原相壓縮
-async function makePhoto(file,useScan){
+async function makePhoto(file,useScan,crop){
   const hd=settings.photoQuality==='hd';
-  if(useScan){try{return {...await docScan(file,{maxSide:hd?2400:2000,maxBytes:hd?690000:450000}),scanned:true}}catch(e){console.warn('scan failed',e)}}
+  if(useScan||crop){try{return {...await docScan(file,{maxSide:hd?2400:2000,maxBytes:hd?690000:450000,crop}),scanned:!!useScan}}catch(e){console.warn('scan failed',e)}}
   return {blob:hd?await shrink(file,2000,690000):await shrink(file),cropped:false,scanned:false};
 }
-async function setPhoto(blob,orig,scanned,cropped){
+async function setPhoto(blob,orig,scanned,cropped,crop){
   const thumb=await toDataUrl(await shrink(blob,160,30000));
   const url=URL.createObjectURL(blob);
   if(pending?.url)URL.revokeObjectURL(pending.url);
-  pending={...(pending||{}),blob,url,thumb,orig,scanned};
+  pending={...(pending||{}),blob,url,thumb,orig,scanned,crop:crop||null};
+  $('cropBtn').hidden=false;$('cropBtn').textContent=crop?'重新裁切':'裁切';
   $('prevImg').src=url;
   $('origBtn').hidden=false;
   $('origBtn').textContent=scanned?'用原相片（唔要掃描效果）':'用掃描效果';
-  $('photoInfo').textContent=(scanned?(cropped?'已自動裁切及加強':'已加強（未能自動裁切）'):'原相片')+' · '+Math.round(blob.size/1024)+' KB';
+  $('photoInfo').textContent=(crop?'已裁切':'未裁切')+' · '+(scanned?'已加強':'原相片')+' · '+Math.round(blob.size/1024)+' KB';
 }
 async function handleFile(file){
   if(!file.type.startsWith('image/')){toast('請選擇相片檔案');return}
@@ -382,7 +425,7 @@ async function handleFile(file){
   $('aiBox').className='ai';$('aiBox').innerHTML='<strong>處理相片中…</strong>';
   let r;
   try{r=await makePhoto(file,useScan)}catch(e){console.warn(e);toast('未能讀取這張相片，請試另一張');$('preview').hidden=true;$('drop').hidden=false;return}
-  await setPhoto(r.blob,file,r.scanned,r.cropped);
+  await setPhoto(r.blob,file,r.scanned,r.cropped,null);
   readAi(r.blob);
 }
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));

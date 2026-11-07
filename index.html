@@ -16,7 +16,7 @@
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700;900&family=Noto+Sans+KR:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap">
-<link rel="stylesheet" href="styles.css?v=15">
+<link rel="stylesheet" href="styles.css?v=16">
 </head>
 <body>
 <div id="setupView" class="setup" hidden>
@@ -113,7 +113,7 @@
       <div style="display:flex;flex-direction:column;gap:8px;min-width:0">
         <div class="ai" id="aiBox"></div>
         <span class="hint" id="photoInfo"></span>
-        <div class="chips"><button class="ghost" id="rePhoto" style="padding:4px 0">更換相片</button><button class="ghost" id="origBtn" style="padding:4px 0" hidden>用原相片</button></div>
+        <div class="chips"><button class="ghost" id="rePhoto" style="padding:4px 0">更換相片</button><button class="ghost" id="cropBtn" style="padding:4px 0" hidden>裁切</button><button class="ghost" id="origBtn" style="padding:4px 0" hidden>用原相片</button></div>
       </div>
     </div>
     <div class="form">
@@ -138,6 +138,16 @@
   </div>
 </div>
 
+<!-- crop -->
+<div class="scrim" id="cropScrim" hidden style="z-index:25">
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="cropTitle">
+    <header><h3 id="cropTitle">裁切收據</h3></header>
+    <div class="hint">拖動四角或四邊調整框框，令框框包住整張收據。框外的部分會被裁走。</div>
+    <div id="cropStage" class="cropstage"><img id="cropImg" alt="原相片"><div id="cropRect"><i data-h="tl"></i><i data-h="tr"></i><i data-h="bl"></i><i data-h="br"></i><b data-h="t"></b><b data-h="b"></b><b data-h="l"></b><b data-h="r"></b></div></div>
+    <div class="actions"><button class="ghost" id="cropFull">整張相（不裁切）</button><span class="spacer"></span><button id="cropCancel">取消</button><button class="primary" id="cropOk">完成</button></div>
+  </div>
+</div>
+
 <!-- detail -->
 <div class="scrim" id="detScrim" hidden>
   <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="detTitle">
@@ -156,7 +166,7 @@
     <div class="label" style="margin:0">會計科目</div>
     <div class="acctlist" id="acctList"></div>
     <div class="label" style="margin:0">相片處理</div>
-    <label class="tag" style="padding:6px 12px;cursor:pointer;align-self:flex-start"><input type="checkbox" id="pqScan" checked> 掃描效果：自動裁切收據、去陰影、白底黑字（更清楚、檔案更細）</label>
+    <label class="tag" style="padding:6px 12px;cursor:pointer;align-self:flex-start"><input type="checkbox" id="pqScan" checked> 掃描效果：去陰影、白底黑字（更清楚、檔案更細）；需要時可按「裁切」</label>
     <div class="label" style="margin:0">相片清晰度</div>
     <div class="chips" role="radiogroup" aria-label="相片清晰度">
       <label class="tag" style="padding:6px 12px;cursor:pointer"><input type="radio" name="pq" id="pqStd" checked> 標準（約 0.2–0.4MB／張）</label>
@@ -188,7 +198,7 @@
 </div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
-<script src="config.js?v=15"></script>
-<script type="module" src="app.js?v=15"></script>
+<script src="config.js?v=16"></script>
+<script type="module" src="app.js?v=16"></script>
 </body>
 </html>

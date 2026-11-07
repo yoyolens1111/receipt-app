@@ -62,17 +62,23 @@ export function findPaper(gray, w, h) {
  * @param {{maxSide?:number,maxBytes?:number}} opt
  * @returns {Promise<{blob:Blob,cropped:boolean}>}
  */
-export async function docScan(file, opt = {}) {
-  const maxSide = opt.maxSide || 2000, maxBytes = opt.maxBytes || 450000;
+/** 估計收據範圍（只用嚟預設手動裁切框；唔會自動裁切）。回傳比例座標或 null */
+export async function detectBox(file) {
   const bmp = await createImageBitmap(file);
-
-  // 1. 細圖偵測收據範圍
   const sw = 360, sh = Math.max(1, Math.round(bmp.height * sw / bmp.width));
   const sc = document.createElement('canvas'); sc.width = sw; sc.height = sh;
   const sx = sc.getContext('2d'); sx.drawImage(bmp, 0, 0, sw, sh);
   const sd = sx.getImageData(0, 0, sw, sh).data;
   const g = new Float32Array(sw * sh); for (let i = 0; i < g.length; i++) g[i] = grayOf(sd, i * 4);
-  const box = findPaper(g, sw, sh);
+  return findPaper(g, sw, sh);
+}
+
+export async function docScan(file, opt = {}) {
+  const maxSide = opt.maxSide || 2000, maxBytes = opt.maxBytes || 450000;
+  const bmp = await createImageBitmap(file);
+
+  // 1. 只會用使用者確認過的裁切框（opt.crop）；冇就用成張相，保證唔會切走內容
+  const box = opt.crop && opt.crop.x1 > opt.crop.x0 && opt.crop.y1 > opt.crop.y0 ? opt.crop : null;
   const crop = box ? { x: box.x0 * bmp.width, y: box.y0 * bmp.height, w: (box.x1 - box.x0) * bmp.width, h: (box.y1 - box.y0) * bmp.height }
     : { x: 0, y: 0, w: bmp.width, h: bmp.height };
 
