@@ -7,7 +7,7 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.6.0/firebas
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js';
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, addDoc, setDoc, updateDoc, deleteDoc, getDoc, writeBatch } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js';
 import { getAI, getGenerativeModel, GoogleAIBackend, VertexAIBackend } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-ai.js';
-import { docScan } from './scan.js?v=13';
+import { docScan } from './scan.js?v=14';
 
 const CATS=[
   {id:'food',zh:'餐飲食物',code:'6110',acct:'膳食及招待費'},
@@ -39,8 +39,10 @@ const modelCache={};
 let fbApp=null,AI_SOURCE='vertex';
 // AI 來源：'vertex' = Firebase Vertex AI（香港可用，需 Blaze 方案）；'key' = Google AI Studio 金鑰（香港不支援）
 const aiRootFor=src=>{try{return getAI(fbApp,{backend:src==='vertex'?new VertexAIBackend():new GoogleAIBackend()})}catch(e){console.warn('AI unavailable',e);return null}};
-const modelFor=m=>{const k=AI_SOURCE+'|'+m;if(!modelCache[k]){const root=aiRootFor(AI_SOURCE);if(!root)throw new Error('AI not configured');modelCache[k]=getGenerativeModel(root,{model:m,generationConfig:{responseMimeType:'application/json',temperature:0.1}})}return modelCache[k]};
-const useKey=()=>AI_SOURCE==='key'&&!!GEMINI_KEY;
+const modelFor=m=>{const k=curSrc()+'|'+m;if(!modelCache[k]){const root=aiRootFor(curSrc());if(!root)throw new Error('AI not configured');modelCache[k]=getGenerativeModel(root,{model:m,generationConfig:{responseMimeType:'application/json',temperature:0.1}})}return modelCache[k]};
+let SRC_NOW=null; // 本次讀取實際使用的來源（自動後備時會暫時改變）
+const curSrc=()=>SRC_NOW||AI_SOURCE;
+const useKey=()=>curSrc()==='key'&&!!GEMINI_KEY;
 const aiStatus=e=>e?.customErrorData?.status||(/\[(\d{3})/.exec(String(e?.message||''))||[])[1]*1||0;
 let rows=[],reports=[],loaded=false,unsubs=[];
 let settings={rates:{...DEFAULT_RATES},accounts:{},photoQuality:'standard',scan:true};
@@ -404,7 +406,22 @@ async function discoverModels(){
   discovered={key:GEMINI_KEY,list:[...new Set([...list,...MODELS])].slice(0,5)};
   return discovered.list;
 }
+// 設定類錯誤（未開通、地區不支援）：可以改用另一個 AI 來源
+const isSetupErr=e=>{const m=String(e?.message||'');return /genai config not found|location is not supported|billing|blaze|SERVICE_DISABLED|has not been used|PERMISSION_DENIED|AI not configured/i.test(m)||aiStatus(e)===403};
 async function callAi(b64,onStatus){
+  const order=[AI_SOURCE];
+  const other=AI_SOURCE==='vertex'?'key':'vertex';
+  if(other==='vertex'||GEMINI_KEY)order.push(other);
+  let firstErr;
+  for(const src of order){
+    SRC_NOW=src;
+    try{return await callAiSrc(b64,onStatus)}
+    catch(e){if(!firstErr)firstErr=e;if(!isSetupErr(e))throw e;onStatus?.(src==='vertex'?'Firebase Vertex AI 未開通，改用 AI Studio 金鑰…':'AI Studio 金鑰用不到，改用 Firebase Vertex AI…')}
+    finally{SRC_NOW=null}
+  }
+  throw firstErr;
+}
+async function callAiSrc(b64,onStatus){
   let lastErr;
   const models=await discoverModels();
   for(const m of models){
@@ -436,6 +453,7 @@ async function readAi(blob){
     const st=aiStatus(e),msg=String(e?.message||e||'');
     box.className='ai err';
     const title=/location is not supported/i.test(msg)?'Google 免費 Gemini API 不支援香港地區，請到設定把「AI 來源」改為 Firebase Vertex AI'
+      :/genai config not found/i.test(msg)?(GEMINI_KEY?'AI 未能使用：Firebase Vertex AI 未開通（需要 Blaze），而 AI Studio 金鑰在此地區亦用不到':'Firebase Vertex AI 未開通（需要 Blaze）。如身處韓國等地區，可在設定貼上 AI Studio 金鑰')
       :AI_SOURCE==='vertex'&&(/billing|blaze|pay-as-you-go|Vertex AI API|aiplatform|SERVICE_DISABLED|has not been used/i.test(msg)||st===403)?'Firebase Vertex AI 未啟用：需要升級 Blaze 方案並啟用 API'
       :st===504?'AI 回應太慢（Google 伺服器繁忙）'
       :[500,502,503].includes(st)||/high demand|overloaded|UNAVAILABLE/i.test(msg)?'AI 伺服器而家太繁忙'
