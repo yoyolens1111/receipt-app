@@ -7,7 +7,7 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.6.0/firebas
 import { getAuth, onAuthStateChanged, signInWithEmailAndPassword, signOut, updatePassword } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-auth.js';
 import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager, collection, doc, onSnapshot, addDoc, setDoc, updateDoc, deleteDoc, getDoc, writeBatch } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-firestore.js';
 import { getAI, getGenerativeModel, GoogleAIBackend, VertexAIBackend } from 'https://www.gstatic.com/firebasejs/12.6.0/firebase-ai.js';
-import { docScan } from './scan.js?v=14';
+import { docScan } from './scan.js?v=15';
 
 const CATS=[
   {id:'food',zh:'餐飲食物',code:'6110',acct:'膳食及招待費'},
